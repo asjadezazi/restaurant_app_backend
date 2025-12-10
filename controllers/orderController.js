@@ -60,6 +60,7 @@ exports.createOrder = async (req, res) => {
           menuItem.pricingType === "variant" ? item.variant : null,
         quantity: item.quantity,
         price: itemPrice,
+        customizations: item.customizations
       });
     }
 
@@ -107,12 +108,80 @@ exports.getAllOrders = async (req, res) => {
   try {
     const user = req.user;
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const orders = await Order.find({ user: user._id })
-    res.status(200).json(orders);
+
+    const { status, range, page = 1, limit = 10 } = req.query;
+
+    // Validate status
+    const allowedStatus = ["pending", "completed", "cancelled"];
+    if (!status || !allowedStatus.includes(status)) {
+      return res.status(400).json({ message: "Status is required and must be pending, completed, or cancelled" });
+    }
+
+    // Date range
+    const now = new Date();
+    let fromDate, toDate = now;
+
+    switch (range) {
+      case "2d":
+        fromDate = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+        break;
+      case "7d":
+        fromDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "15d":
+        fromDate = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000);
+        break;
+      case "30d":
+        fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case "6m":
+        fromDate = new Date(now);
+        fromDate.setMonth(fromDate.getMonth() - 6);
+        break;
+      case "1y":
+        fromDate = new Date(now);
+        fromDate.setFullYear(fromDate.getFullYear() - 1);
+        break;
+      case "all":
+        fromDate = new Date(0);
+        break;
+      default:
+        // Default: last 1 day for completed/cancelled, all for pending
+        if (status === "pending") fromDate = new Date(0);
+        else fromDate = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000);
+    }
+
+    const filter = {
+      user: user._id,
+      status,
+      createdAt: { $gte: fromDate, $lte: toDate },
+    };
+
+    // Pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const orders = await Order.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    const totalOrders = await Order.countDocuments(filter);
+    const totalPages = Math.ceil(totalOrders / limit);
+
+    res.status(200).json({
+      totalOrders,
+      totalPages,
+      currentPage: parseInt(page),
+      from: fromDate,
+      to: toDate,
+      orders,
+    });
   } catch (err) {
+    console.error("Error fetching orders:", err);
     res.status(500).json({ message: err.message });
   }
 };
+
+
+
 
 // Update an Order using id from params, Admin
 exports.updateOrder = async (req, res) => {
@@ -122,8 +191,8 @@ exports.updateOrder = async (req, res) => {
 
     const order = await Order.findByIdAndUpdate(
       orderId,
-      updates,
-      { new: true } 
+      { $set: updates },
+      { new: true }
     );
 
     if (!order) {
@@ -136,6 +205,14 @@ exports.updateOrder = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+
+
+
+
+
+
+
 
 // Soft Delete an order using id from params, Admin
 exports.cancelOrder = async (req, res) => {

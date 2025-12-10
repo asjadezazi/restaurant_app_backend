@@ -39,7 +39,7 @@ exports.getMenuItems = async (req, res) => {
   }
 };
 
-// Get Menu details (Admin, JWT protected)
+// Add Menu details (Admin, JWT protected)
 exports.addMenuItems = async (req, res) => {
   try {
     const {
@@ -109,7 +109,7 @@ exports.addMenuItems = async (req, res) => {
   }
 };
 
-// Add Menu details (Admin, JWT protected)
+// Update Menu details (Admin, JWT protected)
 exports.updateMenuItem = async (req, res) => {
   try {
     const { id } = req.params;
@@ -186,45 +186,6 @@ exports.updateMenuItem = async (req, res) => {
   } catch (err) {
     console.error("Update menu error:", err);
     res.status(500).json({ error: err.message });
-  }
-};
-
-// Update Menu details (Admin, JWT protected)
-exports.updateMenuItem = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    // Fetch the existing menu item
-    const item = await MenuItem.findById(id);
-    if (!item) {
-      return res.status(404).json({ error: 'Menu item not found.' });
-    }
-
-    // Prepare the update data
-    const updateData = { ...(req.body || {}), modifiedAt: new Date() };
-
-    if (req.file) {
-      // Delete old image if it exists
-      if (item.image?.public_id) {
-        await deleteFromCloudinary(item.image.public_id).catch(console.warn);
-      }
-
-      // Upload the new image
-      const result = await uploadToCloudinary(req.file.buffer);
-      updateData.image = {
-        url: result.secure_url,
-        public_id: result.public_id
-      };
-    }
-
-    // Update the menu item in the database
-    const updatedItem = await MenuItem.findByIdAndUpdate(id, updateData, { new: true });
-
-    return res.status(200).json({ message: 'Menu item updated.', item: updatedItem });
-
-  } catch (err) {
-    console.error('Update error:', err);
-    return res.status(500).json({ error: err.message });
   }
 };
 

@@ -22,6 +22,10 @@ const orderSchema = new mongoose.Schema({
       variant: { type: String, required: false }, // optional for single-price items
       quantity: { type: Number, required: true },
       price: { type: Number, required: true }, // price per unit or per variant
+      customizations: {
+        type: String,
+        default: ""
+      }
     },
   ],
   status: {
