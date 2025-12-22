@@ -6,7 +6,11 @@ const orderSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
-
+    fingerPrint: {
+    type: String,
+    required: false,
+    index: true,
+  },
   customerName: { type: String, required: true },
   customerPhone: { type: String, required: true },
   address: { type: String },

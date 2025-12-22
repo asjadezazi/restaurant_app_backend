@@ -5,9 +5,11 @@ const orderController = require("../controllers/orderController");
 const { authenticate } = require("../middleware/authMiddleware")
 const getTenant = require("../middleware/tenantMiddleware")
 
-// Create order
+// Create order client (public)
 router.post("/", getTenant, orderController.createOrder);
-// Get order
+// Get order client (public)
+router.get("/fingerprint", orderController.getOrdersByFingerPrint);
+// Get order admin
 router.get("/", authenticate, orderController.getAllOrders);
 // Update order
 router.put("/:orderId", orderController.updateOrder);

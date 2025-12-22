@@ -116,7 +116,6 @@ exports.getRestaurantInsights = async (req, res) => {
   }
 };
 
-
 // Get Top Selling Products
 exports.getTopSellingProducts = async (req, res) => {
   try {

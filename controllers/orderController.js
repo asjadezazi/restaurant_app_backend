@@ -12,7 +12,7 @@ exports.createOrder = async (req, res) => {
       return res.status(404).json({ message: "Restaurant/admin not found" });
     }
 
-    const { customerName, customerPhone, items, tableId, orderType, address } = req.body;
+    const { fingerPrint, customerName, customerPhone, items, tableId, orderType, address } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: "Order must contain at least one item." });
@@ -81,6 +81,7 @@ exports.createOrder = async (req, res) => {
     // Create order (modern async style)
     const order = await Order.create({
       user: tenantAdminId,
+      fingerPrint,
       customerName,
       customerPhone,
       items: enrichedItems,
@@ -180,7 +181,43 @@ exports.getAllOrders = async (req, res) => {
   }
 };
 
+// Get Orders by fingerprint
+exports.getOrdersByFingerPrint = async (req, res) => {
+  try {
+    const { fingerPrint, page = 1, limit = 5 } = req.query;
 
+    if (!fingerPrint) {
+      return res.status(400).json({
+        message: "fingerPrint is required",
+      });
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [orders, total] = await Promise.all([
+      Order.find({ fingerPrint })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit))
+        .lean(),
+
+      Order.countDocuments({ fingerPrint }),
+    ]);
+
+    res.status(200).json({
+      page: Number(page),
+      limit: Number(limit),
+      totalOrders: total,
+      totalPages: Math.ceil(total / limit),
+      orders,
+    });
+  } catch (error) {
+    console.error("Get orders by fingerprint error:", error);
+    res.status(500).json({
+      message: "Server error",
+    });
+  }
+};
 
 
 // Update an Order using id from params, Admin
@@ -205,14 +242,6 @@ exports.updateOrder = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
-
-
-
-
-
-
 
 // Soft Delete an order using id from params, Admin
 exports.cancelOrder = async (req, res) => {
