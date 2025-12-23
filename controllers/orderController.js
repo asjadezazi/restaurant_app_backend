@@ -226,22 +226,114 @@ exports.updateOrder = async (req, res) => {
     const { orderId } = req.params;
     const updates = req.body;
 
-    const order = await Order.findByIdAndUpdate(
-      orderId,
-      { $set: updates },
-      { new: true }
-    );
-
-    if (!order) {
+    // 1️⃣ Fetch existing order
+    const existingOrder = await Order.findById(orderId);
+    if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    res.json({ message: "Order updated successfully from Admin", order });
+    const updatePayload = {};
+
+    // 2️⃣ Simple field updates (safe)
+    const allowedSimpleFields = [
+      "status",
+      "tableId",
+      "address",
+      "orderType"
+    ];
+
+    allowedSimpleFields.forEach(field => {
+      if (updates[field] !== undefined) {
+        updatePayload[field] = updates[field];
+      }
+    });
+
+    // 3️⃣ If items are being updated → recalculate everything
+    if (Array.isArray(updates.items)) {
+      if (updates.items.length === 0) {
+        return res.status(400).json({ message: "Order must have at least one item" });
+      }
+
+      // Fetch menu items
+      const menuItems = await MenuItem.find({
+        _id: { $in: updates.items.map(i => i.menuItemId) }
+      });
+
+      let subtotal = 0;
+      const enrichedItems = [];
+
+      for (const item of updates.items) {
+        const menuItem = menuItems.find(
+          m => m._id.toString() === item.menuItemId
+        );
+
+        if (!menuItem) {
+          return res.status(400).json({
+            message: `Menu item not found: ${item.menuItemId}`
+          });
+        }
+
+        let itemPrice = 0;
+
+        if (menuItem.pricingType === "single") {
+          itemPrice = menuItem.price;
+        } else if (menuItem.pricingType === "variant") {
+          const variantKey = item.variant?.toLowerCase();
+          if (!variantKey || !menuItem.variantRates[variantKey]) {
+            return res.status(400).json({
+              message: `Invalid variant '${item.variant}' for ${menuItem.name}`
+            });
+          }
+          itemPrice = menuItem.variantRates[variantKey];
+        }
+
+        subtotal += itemPrice * item.quantity;
+
+        enrichedItems.push({
+          menuItemId: menuItem._id,
+          name: menuItem.name,
+          variant: menuItem.pricingType === "variant" ? item.variant : null,
+          quantity: item.quantity,
+          price: itemPrice,
+          customizations: item.customizations || ""
+        });
+      }
+
+      // GST recalculation
+      const restaurant = await Restaurant.findOne({
+        user: existingOrder.user,
+        deleted: false
+      });
+
+      const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
+      const gstAmount = (subtotal * gstRate) / 100;
+      const totalAmount = subtotal + gstAmount;
+
+      updatePayload.items = enrichedItems;
+      updatePayload.subtotal = subtotal;
+      updatePayload.gstRate = gstRate;
+      updatePayload.gstAmount = gstAmount;
+      updatePayload.totalAmount = totalAmount;
+    }
+
+    // 4️⃣ Final update
+    const updatedOrder = await Order.findByIdAndUpdate(
+      orderId,
+      { $set: updatePayload },
+      { new: true }
+    );
+
+    res.status(200).json({
+      message: "Order updated successfully",
+      order: updatedOrder
+    });
+
   } catch (error) {
     console.error("Error updating order:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
 
 // Soft Delete an order using id from params, Admin
 exports.cancelOrder = async (req, res) => {
