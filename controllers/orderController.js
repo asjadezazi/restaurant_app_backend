@@ -1,7 +1,7 @@
 // controllers/orderController.js
 const Order = require("../models/Order");
 const Restaurant = require("../models/Restaurant");
-const MenuItem = require("../models/MenuItem")
+const MenuItem = require("../models/MenuItem");
 
 // Create Order ( Client, via tenantMiddleware)
 exports.createOrder = async (req, res) => {
@@ -12,10 +12,20 @@ exports.createOrder = async (req, res) => {
       return res.status(404).json({ message: "Restaurant/admin not found" });
     }
 
-    const { fingerPrint, customerName, customerPhone, items, tableId, orderType, address } = req.body;
+    const {
+      fingerPrint,
+      customerName,
+      customerPhone,
+      items,
+      tableId,
+      orderType,
+      address,
+    } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Order must contain at least one item." });
+      return res
+        .status(400)
+        .json({ message: "Order must contain at least one item." });
     }
 
     // Fetch all menu items (no callbacks, async/await only)
@@ -56,11 +66,10 @@ exports.createOrder = async (req, res) => {
       enrichedItems.push({
         menuItemId: menuItem._id,
         name: menuItem.name,
-        variant:
-          menuItem.pricingType === "variant" ? item.variant : null,
+        variant: menuItem.pricingType === "variant" ? item.variant : null,
         quantity: item.quantity,
         price: itemPrice,
-        customizations: item.customizations
+        customizations: item.customizations,
       });
     }
 
@@ -104,7 +113,7 @@ exports.createOrder = async (req, res) => {
   }
 };
 
-// Get All Orders ( Admin, JWT Protected) 
+// Get All Orders ( Admin, JWT Protected)
 exports.getAllOrders = async (req, res) => {
   try {
     const user = req.user;
@@ -115,12 +124,16 @@ exports.getAllOrders = async (req, res) => {
     // Validate status
     const allowedStatus = ["pending", "completed", "cancelled"];
     if (!status || !allowedStatus.includes(status)) {
-      return res.status(400).json({ message: "Status is required and must be pending, completed, or cancelled" });
+      return res.status(400).json({
+        message:
+          "Status is required and must be pending, completed, or cancelled",
+      });
     }
 
     // Date range
     const now = new Date();
-    let fromDate, toDate = now;
+    let fromDate,
+      toDate = now;
 
     switch (range) {
       case "2d":
@@ -219,14 +232,16 @@ exports.getOrdersByFingerPrint = async (req, res) => {
   }
 };
 
-
 // Update an Order using id from params, Admin
 exports.updateOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
     const updates = req.body;
 
-    // 1️⃣ Fetch existing order
+    const ALLOWED_ORDER_TYPES = ["Eat Here", "Take Away", "Delivery"];
+    const SIMPLE_FIELDS = ["status", "tableId", "address", "orderType"];
+
+    // Fetch existing order (needed for items + GST calc)
     const existingOrder = await Order.findById(orderId);
     if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
@@ -234,89 +249,111 @@ exports.updateOrder = async (req, res) => {
 
     const updatePayload = {};
 
-    // 2️⃣ Simple field updates (safe)
-    const allowedSimpleFields = [
-      "status",
-      "tableId",
-      "address",
-      "orderType"
-    ];
+    // Validate orderType (if provided)
+    if (updates.orderType && !ALLOWED_ORDER_TYPES.includes(updates.orderType)) {
+      return res.status(400).json({ message: "Invalid orderType" });
+    }
 
-    allowedSimpleFields.forEach(field => {
+    // Apply simple field updates
+    SIMPLE_FIELDS.forEach((field) => {
       if (updates[field] !== undefined) {
         updatePayload[field] = updates[field];
       }
     });
 
-    // 3️⃣ If items are being updated → recalculate everything
+    // Enforce orderType-specific rules
+    if (updates.orderType === "Delivery") {
+      if (!updates.address) {
+        return res
+          .status(400)
+          .json({ message: "Address is required for delivery orders" });
+      }
+      updatePayload.tableId = null;
+    }
+
+    if (updates.orderType === "Eat Here") {
+      if (!updates.tableId) {
+        return res
+          .status(400)
+          .json({ message: "Table ID is required for Eat Here orders" });
+      }
+      updatePayload.address = null;
+    }
+
+    if (updates.orderType === "Take Away") {
+      updatePayload.tableId = null;
+      updatePayload.address = null;
+    }
+
+    // Recalculate items only if items are updated
     if (Array.isArray(updates.items)) {
-      if (updates.items.length === 0) {
-        return res.status(400).json({ message: "Order must have at least one item" });
+      if (!updates.items.length) {
+        return res
+          .status(400)
+          .json({ message: "Order must have at least one item" });
       }
 
-      // Fetch menu items
-      const menuItems = await MenuItem.find({
-        _id: { $in: updates.items.map(i => i.menuItemId) }
-      });
+      const menuItemIds = updates.items.map((i) => i.menuItemId);
+
+      const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
+      const menuMap = new Map(menuItems.map((m) => [m._id.toString(), m]));
 
       let subtotal = 0;
       const enrichedItems = [];
 
       for (const item of updates.items) {
-        const menuItem = menuItems.find(
-          m => m._id.toString() === item.menuItemId
-        );
-
+        const menuItem = menuMap.get(item.menuItemId);
         if (!menuItem) {
           return res.status(400).json({
-            message: `Menu item not found: ${item.menuItemId}`
+            message: `Menu item not found: ${item.menuItemId}`,
           });
         }
 
-        let itemPrice = 0;
+        let price;
 
         if (menuItem.pricingType === "single") {
-          itemPrice = menuItem.price;
-        } else if (menuItem.pricingType === "variant") {
+          price = menuItem.price;
+        } else {
           const variantKey = item.variant?.toLowerCase();
           if (!variantKey || !menuItem.variantRates[variantKey]) {
             return res.status(400).json({
-              message: `Invalid variant '${item.variant}' for ${menuItem.name}`
+              message: `Invalid variant '${item.variant}' for ${menuItem.name}`,
             });
           }
-          itemPrice = menuItem.variantRates[variantKey];
+          price = menuItem.variantRates[variantKey];
         }
 
-        subtotal += itemPrice * item.quantity;
+        subtotal += price * item.quantity;
 
         enrichedItems.push({
           menuItemId: menuItem._id,
           name: menuItem.name,
           variant: menuItem.pricingType === "variant" ? item.variant : null,
           quantity: item.quantity,
-          price: itemPrice,
-          customizations: item.customizations || ""
+          price,
+          customizations: item.customizations || "",
         });
       }
 
-      // GST recalculation
+      // GST calculation
       const restaurant = await Restaurant.findOne({
         user: existingOrder.user,
-        deleted: false
+        deleted: false,
       });
 
       const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
       const gstAmount = (subtotal * gstRate) / 100;
-      const totalAmount = subtotal + gstAmount;
 
-      updatePayload.items = enrichedItems;
-      updatePayload.subtotal = subtotal;
-      updatePayload.gstRate = gstRate;
-      updatePayload.gstAmount = gstAmount;
-      updatePayload.totalAmount = totalAmount;
+      Object.assign(updatePayload, {
+        items: enrichedItems,
+        subtotal,
+        gstRate,
+        gstAmount,
+        totalAmount: subtotal + gstAmount,
+      });
     }
 
-    // 4️⃣ Final update
+    // Update order
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updatePayload },
@@ -325,15 +362,16 @@ exports.updateOrder = async (req, res) => {
 
     res.status(200).json({
       message: "Order updated successfully",
-      order: updatedOrder
+      order: updatedOrder,
     });
-
   } catch (error) {
     console.error("Error updating order:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
   }
 };
-
 
 // Soft Delete an order using id from params, Admin
 exports.cancelOrder = async (req, res) => {
