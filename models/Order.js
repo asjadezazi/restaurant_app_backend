@@ -6,7 +6,7 @@ const orderSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
-    fingerPrint: {
+  fingerPrint: {
     type: String,
     required: false,
     index: true,
@@ -23,13 +23,25 @@ const orderSchema = new mongoose.Schema({
         required: true,
       },
       name: { type: String, required: true },
-      variant: { type: String, required: false }, // optional for single-price items
+      variant: { type: String, required: false },
       quantity: { type: Number, required: true },
-      price: { type: Number, required: true }, // price per unit or per variant
+      price: { type: Number, required: true },
+      discountedPrice: { type: Number, required: true },
+      discountApplied: {
+        type: {
+          type: String,
+          enum: ["percentage", "flat"],
+          default: null,
+        },
+        value: {
+          type: Number,
+          default: 0,
+        },
+      },
       customizations: {
         type: String,
-        default: ""
-      }
+        default: "",
+      },
     },
   ],
   status: {
@@ -40,7 +52,7 @@ const orderSchema = new mongoose.Schema({
   orderType: {
     type: String,
     enum: ["Eat Here", "Take Away", "Delivery"],
-    required: true
+    required: true,
   },
   subtotal: { type: Number, required: true },
   gstRate: { type: Number, required: true },

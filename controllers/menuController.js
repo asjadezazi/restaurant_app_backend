@@ -1,7 +1,10 @@
 // controllers/menuController.js
-const MenuItem = require("../models/MenuItem")
-const { uploadToCloudinary, deleteFromCloudinary } = require("../utils/cloudinary")
-
+const MenuItem = require("../models/MenuItem");
+const {
+  uploadToCloudinary,
+  deleteFromCloudinary,
+} = require("../utils/cloudinary");
+const normalizeDiscount = require("../utils/normalizeDiscount");
 
 // Get Menu details (Client, via tenant middleware)
 exports.getMenuByTenant = async (req, res) => {
@@ -12,7 +15,10 @@ exports.getMenuByTenant = async (req, res) => {
       return res.status(404).json({ message: "Tenant not found" });
     }
 
-    const menuItems = await MenuItem.find({ user: tenantAdminId, deleted: false });
+    const menuItems = await MenuItem.find({
+      user: tenantAdminId,
+      deleted: false,
+    });
 
     res.status(200).json({
       message: `Menu Items from restaurant: ${tenantRestaurantName}`,
@@ -45,60 +51,122 @@ exports.addMenuItems = async (req, res) => {
     const {
       name,
       description,
+      pricingType, // "single", "variant", "combo"
       price,
-      pricingType, // "single" or "variant"
       variantRates,
       type,
       category,
       available,
+      discount, // for single items
+      comboPrice, // for combo items
+      comboItems, // array of items in combo [{menuItemId, variant?, quantity}]
     } = req.body;
 
     let image = null;
-
-    // Upload to Cloudinary if image exists
     if (req.file) {
       const result = await uploadToCloudinary(req.file.buffer);
-      image = {
-        url: result.secure_url,
-        public_id: result.public_id,
-      };
+      image = { url: result.secure_url, public_id: result.public_id };
     }
 
-    // Validation logic for pricing
+    if (!["single", "variant", "combo"].includes(pricingType)) {
+      return res.status(400).json({ error: "Invalid pricing type" });
+    }
+
+    const itemData = {
+      name,
+      description,
+      pricingType,
+      type,
+      category,
+      available,
+      image,
+      user: req.user._id,
+    };
+
+    // ---- SINGLE ITEM ----
     if (pricingType === "single") {
-      if (!price) {
-        return res.status(400).json({ error: "Single price is required" });
-      }
-    } else if (pricingType === "variant") {
+      if (!price)
+        return res.status(400).json({ error: "Single price required" });
+      itemData.price = price;
+      itemData.discount = normalizeDiscount(discount);
+    }
+
+    // ---- VARIANT ITEM ----
+    if (pricingType === "variant") {
       if (
         !variantRates ||
         (!variantRates.quarter && !variantRates.half && !variantRates.full)
       ) {
         return res
           .status(400)
-          .json({ error: "At least one variant rate (quarter/half/full) is required" });
+          .json({ error: "At least one variant rate required" });
       }
-    } else {
-      return res
-        .status(400)
-        .json({ error: "Invalid pricing type. Must be 'single' or 'variant'" });
+      ["quarter", "half", "full"].forEach((key) => {
+        if (variantRates[key])
+          variantRates[key].discount = normalizeDiscount(
+            variantRates[key].discount
+          );
+      });
+      itemData.variantRates = variantRates;
     }
 
-    // Create new item
-    const newItem = new MenuItem({
-      name,
-      description,
-      pricingType,
-      price: pricingType === "single" ? price : null,
-      variantRates: pricingType === "variant" ? variantRates : null,
-      type,
-      category,
-      available,
-      image,
-      user: req.user._id,
-    });
+    // ---- COMBO ITEM ----
+    // ---- COMBO ITEM ----
+    if (pricingType === "combo") {
+      if (
+        !comboPrice ||
+        !comboItems ||
+        !Array.isArray(comboItems) ||
+        comboItems.length === 0
+      ) {
+        return res
+          .status(400)
+          .json({ error: "Combo price and comboItems required" });
+      }
 
+      // 1️⃣ Fetch menu items for name snapshot
+      const menuItems = await MenuItem.find({
+        _id: { $in: comboItems.map((i) => i.menuItemId) },
+        deleted: false,
+      });
+
+      const comboItemsWithNames = comboItems.map((ci) => {
+        const found = menuItems.find((m) => m._id.toString() === ci.menuItemId);
+
+        if (!found) {
+          throw new Error("Invalid menuItemId in combo");
+        }
+
+        // validate variant if required
+        if (
+          ci.variant &&
+          found.pricingType === "variant" &&
+          !found.variantRates[ci.variant]
+        ) {
+          throw new Error(`Invalid variant "${ci.variant}" for ${found.name}`);
+        }
+
+        return {
+          menuItemId: found._id,
+          name: found.name, // ✅ snapshot
+          variant: ci.variant || null,
+          quantity: ci.quantity || 1,
+        };
+      });
+
+      itemData.pricingType = "combo";
+      itemData.isCombo = true;
+      itemData.comboPrice = comboPrice;
+      itemData.comboItems = comboItemsWithNames;
+
+      itemData.price = undefined;
+      itemData.discount = undefined;
+      itemData.variantRates = undefined;
+    }
+
+    const newItem = new MenuItem(itemData);
     await newItem.save();
+
     res.status(201).json({
       message: "Menu item created successfully",
       item: newItem,
@@ -119,69 +187,100 @@ exports.updateMenuItem = async (req, res) => {
       pricingType,
       price,
       variantRates,
+      discount,
+      comboPrice,
+      comboItems,
       type,
       category,
       available,
     } = req.body;
 
-    const existingItem = await MenuItem.findById(id);
-    if (!existingItem) {
-      return res.status(404).json({ error: "Menu item not found" });
-    }
+    const item = await MenuItem.findById(id);
+    if (!item) return res.status(404).json({ error: "Menu item not found" });
 
-    // --- Handle image update (optional) ---
-    let image = existingItem.image;
+    const update = {};
+    const unset = {};
+
+    // ---------- BASIC FIELDS ----------
+    if (name !== undefined) update.name = name;
+    if (description !== undefined) update.description = description;
+    if (type !== undefined) update.type = type;
+    if (category !== undefined) update.category = category;
+    if (available !== undefined) update.available = available;
+
+    // ---------- IMAGE ----------
     if (req.file) {
-      // Delete old image from Cloudinary if exists
-      if (image && image.public_id) {
-        await deleteFromCloudinary(image.public_id);
+      if (item.image?.public_id) {
+        await deleteFromCloudinary(item.image.public_id);
       }
-      // Upload new one
       const result = await uploadToCloudinary(req.file.buffer);
-      image = {
+      update.image = {
         url: result.secure_url,
         public_id: result.public_id,
       };
     }
 
-    // --- Handle pricing logic ---
+    // ---------- PRICING TYPE ----------
+    if (pricingType) update.pricingType = pricingType;
+
+    // ================= SINGLE =================
     if (pricingType === "single") {
-      if (!price) {
-        return res.status(400).json({ error: "Single price is required" });
-      }
-      existingItem.price = price;
-      existingItem.variantRates = { quarter: null, half: null, full: null };
-    } else if (pricingType === "variant") {
-      if (
-        !variantRates ||
-        (!variantRates.quarter && !variantRates.half && !variantRates.full)
-      ) {
-        return res
-          .status(400)
-          .json({ error: "At least one variant rate (quarter/half/full) is required" });
-      }
-      existingItem.price = null;
-      existingItem.variantRates = variantRates;
-    } else {
-      return res
-        .status(400)
-        .json({ error: "Invalid pricing type. Must be 'single' or 'variant'" });
+      if (price !== undefined) update.price = price;
+      if (discount !== undefined)
+        update.discount = normalizeDiscount(discount);
+
+      unset.variantRates = "";
+      unset.comboItems = "";
+      unset.comboPrice = "";
     }
 
-    // --- Update other fields ---
-    existingItem.pricingType = pricingType ?? existingItem.pricingType;
-    existingItem.name = name ?? existingItem.name;
-    existingItem.description = description ?? existingItem.description;
-    existingItem.type = type ?? existingItem.type;
-    existingItem.category = category ?? existingItem.category;
-    existingItem.available = available ?? existingItem.available;
-    existingItem.image = image;
+    // ================= VARIANT =================
+    if (pricingType === "variant") {
+      if (variantRates) {
+        Object.entries(variantRates).forEach(([key, value]) => {
+          if (value.price !== undefined) {
+            update[`variantRates.${key}.price`] = value.price;
+          }
+          if (value.discount !== undefined) {
+            update[`variantRates.${key}.discount`] =
+              normalizeDiscount(value.discount);
+          }
+        });
+      }
 
-    await existingItem.save();
+      unset.price = "";
+      unset.discount = "";
+      unset.comboItems = "";
+      unset.comboPrice = "";
+    }
+
+    // ================= COMBO =================
+    if (pricingType === "combo") {
+      if (comboPrice !== undefined) update.comboPrice = comboPrice;
+      if (comboItems !== undefined) update.comboItems = comboItems;
+
+      update.isCombo = true;
+
+      unset.price = "";
+      unset.discount = "";
+      unset.variantRates = "";
+    }
+
+    // ---------- EXECUTE PATCH ----------
+    await MenuItem.findByIdAndUpdate(
+      id,
+      {
+        ...(Object.keys(update).length && { $set: update }),
+        ...(Object.keys(unset).length && { $unset: unset }),
+      },
+      { new: true, runValidators: true }
+    );
+
+    const updatedItem = await MenuItem.findById(id);
 
     res.status(200).json({
       message: "Menu item updated successfully",
-      item: existingItem,
+      item: updatedItem,
     });
   } catch (err) {
     console.error("Update menu error:", err);
@@ -189,9 +288,11 @@ exports.updateMenuItem = async (req, res) => {
   }
 };
 
+
+
 // Delete (Soft) Menu details (Admin, JWT protected)
 exports.deleteMenuItem = async (req, res) => {
-  const { id } = req.params
+  const { id } = req.params;
 
   try {
     const item = await MenuItem.findById(id);
@@ -210,5 +311,3 @@ exports.deleteMenuItem = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
-
