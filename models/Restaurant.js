@@ -25,6 +25,7 @@ const restaurantSchema = new mongoose.Schema(
             takeaway: { type: Boolean, default: true },
             delivery: { type: Boolean, default: true },
         },
+        deliveryCharges: { type: Number, default: 0 },
         gstNumber: { type: String },
         gstRate: { type: Number, default: 0 },
         gstEnabled: { type: Boolean, default: false },

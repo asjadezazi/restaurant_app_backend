@@ -19,10 +19,7 @@ exports.authenticate = async (req, res, next) => {
     if (!user) return res.status(401).json({ message: "User not found" });
 
     // Attach id and role from token to req.user
-    req.user = {
-      _id: user._id,
-      role: decoded.role,
-    };
+    req.user = user
 
     next();
   } catch (err) {

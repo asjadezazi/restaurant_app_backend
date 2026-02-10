@@ -1,14 +1,32 @@
-function normalizeDiscount(discount) {
-  if (!discount || discount.active === false) {
-    return { type: null, value: 0, active: false };
+const normalizeDiscount = (discount) => {
+  if (!discount) {
+    return {
+      type: null,
+      value: 0,
+      active: false,
+    };
   }
 
-  // Validate type & value
-  const type = ["percentage", "flat"].includes(discount.type)
-    ? discount.type
+  // Ensure type is either "flat", "percentage", or null
+  const discountType = discount.type === "flat" || discount.type === "percentage" 
+    ? discount.type 
     : null;
-  const value = typeof discount.value === "number" && discount.value > 0 ? discount.value : 0;
 
-  return { type, value, active: true };
-}
-module.exports = normalizeDiscount
+  // Parse value safely
+  let discountValue = 0;
+  if (discount.value !== undefined && discount.value !== null) {
+    const parsed = Number(discount.value);
+    discountValue = isNaN(parsed) ? 0 : parsed;
+  }
+
+  // Check if discount is active
+  const isActive = Boolean(discount.active) && discountValue >= 0;
+
+  return {
+    type: discountType,
+    value: discountValue,
+    active: isActive,
+  };
+};
+
+module.exports = normalizeDiscount;

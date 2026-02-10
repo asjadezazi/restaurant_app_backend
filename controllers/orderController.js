@@ -3,6 +3,7 @@ const Order = require("../models/Order");
 const Restaurant = require("../models/Restaurant");
 const MenuItem = require("../models/MenuItem");
 const calculateDiscountedPrice = require("../utils/calculateDiscountedPrice");
+const normalizeDiscount = require("../utils/normalizeDiscount");
 
 // Create Order ( Client, via tenantMiddleware)
 exports.createOrder = async (req, res) => {
@@ -28,7 +29,7 @@ exports.createOrder = async (req, res) => {
         .json({ message: "Order must contain at least one item." });
     }
 
-    // 1️⃣ Fetch menu items
+    // 1 Fetch menu items
     const menuItems = await MenuItem.find({
       _id: { $in: items.map((i) => i.menuItemId) },
       deleted: false,
@@ -38,97 +39,90 @@ exports.createOrder = async (req, res) => {
     let subtotal = 0;
     const orderItems = [];
 
-    // 2️⃣ Build order items
+    // 2 Build order items safely
     for (const item of items) {
       const menuItem = menuItems.find(
-        (m) => m._id.toString() === item.menuItemId
+        (m) => m._id.toString() === item.menuItemId,
       );
-
       if (!menuItem) {
         return res
           .status(400)
-          .json({ message: "Menu item not found" });
+          .json({ message: `Menu item not found for ID ${item.menuItemId}` });
       }
 
+      const quantity = Number(item.quantity) || 1;
       let basePrice;
-      let discountedPrice;
+      let discountedPrice = 0;
       let discountSnapshot = null;
       let variant = null;
 
-       // ---- SINGLE PRICING ----
+      // ---- SINGLE PRICING ----
       if (menuItem.pricingType === "single") {
-        basePrice = menuItem.price;
-
-        discountedPrice = calculateDiscountedPrice(
-          basePrice,
-          menuItem.discount
-        );
-
-        discountSnapshot = menuItem.discount;
+        basePrice = Number(menuItem.price) || 0;
+        const discountObj = normalizeDiscount(menuItem.discount);
+        discountedPrice = calculateDiscountedPrice(basePrice, discountObj);
+        discountSnapshot = discountObj;
       }
       // ---- VARIANT PRICING ----
       else if (menuItem.pricingType === "variant") {
         const variantKey = item.variant?.toLowerCase();
-
         if (!variantKey || !menuItem.variantRates[variantKey]) {
-          return res.status(400).json({
-            message: `Invalid variant for ${menuItem.name}`,
-          });
+          return res
+            .status(400)
+            .json({ message: `Invalid variant for ${menuItem.name}` });
         }
 
         const variantData = menuItem.variantRates[variantKey];
-
-        basePrice = variantData.price;
-        discountedPrice = calculateDiscountedPrice(
-          basePrice,
-          variantData.discount
-        );
-
-        discountSnapshot = variantData.discount;
+        basePrice = Number(variantData.price) || 0;
+        const discountObj = normalizeDiscount(variantData.discount);
+        discountedPrice = calculateDiscountedPrice(basePrice, discountObj);
+        discountSnapshot = discountObj;
         variant = variantKey;
       }
       // ---- COMBO PRICING ----
-      else if (menuItem.isCombo) {
-        // Combo price is fixed, no discounts
-        basePrice = menuItem.comboPrice;
+      else if (menuItem.pricingType === "combo") {
+        basePrice = Number(menuItem.comboPrice) || 0;
         discountedPrice = basePrice;
-        discountSnapshot = null;
+        discountSnapshot = {
+          type: null,
+          value: 0,
+        };
       }
 
-      subtotal += discountedPrice * item.quantity;
+      // Add to subtotal safely
+      subtotal += discountedPrice * quantity;
 
+      // Push item to order
       orderItems.push({
         menuItemId: menuItem._id,
         name: menuItem.name,
         variant,
-        quantity: item.quantity,
-
+        quantity,
         price: basePrice,
         discountedPrice,
         discountApplied: discountSnapshot,
-
         customizations: item.customizations || "",
       });
     }
 
-    // 3️⃣ GST
+    // 3 GST and Delivery Charges calculation
     const restaurant = await Restaurant.findOne({
       user: tenantAdminId,
       deleted: false,
     });
 
     const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
-    const gstAmount = (subtotal * gstRate) / 100;
-    const totalAmount = subtotal + gstAmount;
+    const deliveryCharges =
+      orderType === "Delivery" ? Number(restaurant?.deliveryCharges || 0) : 0;
 
-    // 4️⃣ OrderType cleanup
-    const finalTableId =
-      orderType === "Eat Here" ? tableId : null;
+    const gstAmount = (Number(subtotal) * (gstRate || 0)) / 100;
+    const totalAmount = Number(subtotal) + Number(gstAmount) + deliveryCharges;
 
-    const finalAddress =
-      orderType === "Delivery" ? address : null;
+    // 4 OrderType cleanup
+    const finalTableId = orderType === "Eat Here" ? tableId : null;
+    const finalAddress = orderType === "Delivery" ? address : null;
 
-    // 5️⃣ Create Order
+    // 5 Create Order
     const order = await Order.create({
       user: tenantAdminId,
       fingerPrint,
@@ -138,143 +132,123 @@ exports.createOrder = async (req, res) => {
       subtotal,
       gstRate,
       gstAmount,
+      deliveryCharges,
       totalAmount,
       tableId: finalTableId,
       orderType,
       address: finalAddress,
     });
 
-    res.status(201).json({
-      message: "Order placed successfully",
-      order,
-    });
+    res.status(201).json({ message: "Order placed successfully", order });
   } catch (error) {
     console.error("Create order error:", error);
-    res.status(500).json({
-      message: "Server error",
-      error: error.message,
-    });
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };
-
-
 
 // Get All Orders ( Admin, JWT Protected)
 exports.getAllOrders = async (req, res) => {
   try {
-    const user = req.user;
-    if (!user) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
-    const { status, range, page = 1, limit = 10 } = req.query;
+    const { role, _id, createdBy } = req.user;
+    const { status, range = "all", page = 1, limit = 10 } = req.query;
 
-    // Validate status
+    let ownerAdminId;
+
+    if (role === "admin") {
+      ownerAdminId = _id; 
+    }
+
+    if (role === "staff") {
+      ownerAdminId = createdBy; 
+    }
+
+    // ✅ Validate status
     const allowedStatus = ["pending", "completed", "cancelled"];
-    if (!status || !allowedStatus.includes(status)) {
+    if (!status || !allowedStatus.includes(status.toLowerCase())) {
       return res.status(400).json({
-        message:
-          "Status is required and must be pending, completed, or cancelled",
+        message: "Status must be pending, completed, or cancelled",
       });
     }
 
-    // Date range
+    // 📅 Date range
     const now = new Date();
-    let fromDate,
-      toDate = now;
+    let fromDate;
 
     switch (range) {
       case "2d":
-        fromDate = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+        fromDate = new Date(now.getTime() - 2 * 86400000);
         break;
       case "7d":
-        fromDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        fromDate = new Date(now.getTime() - 7 * 86400000);
         break;
       case "15d":
-        fromDate = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000);
+        fromDate = new Date(now.getTime() - 15 * 86400000);
         break;
       case "30d":
-        fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case "6m":
-        fromDate = new Date(now);
-        fromDate.setMonth(fromDate.getMonth() - 6);
-        break;
-      case "1y":
-        fromDate = new Date(now);
-        fromDate.setFullYear(fromDate.getFullYear() - 1);
-        break;
-      case "all":
-        fromDate = new Date(0);
+        fromDate = new Date(now.getTime() - 30 * 86400000);
         break;
       default:
-        // Default: last 1 day for completed/cancelled, all for pending
-        if (status === "pending") fromDate = new Date(0);
-        else fromDate = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000);
+        fromDate = new Date(0);
     }
 
+    // ✅ FINAL FILTER (single source of truth)
     const filter = {
-      user: user._id,
-      status,
-      createdAt: { $gte: fromDate, $lte: toDate },
+      user: ownerAdminId, // 🔥 admin id ALWAYS
+      status: status.toLowerCase(),
+      createdAt: { $gte: fromDate, $lte: now },
     };
 
-    // Pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const skip = (Number(page) - 1) * Number(limit);
+
     const orders = await Order.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(Number(limit));
+
     const totalOrders = await Order.countDocuments(filter);
-    const totalPages = Math.ceil(totalOrders / limit);
 
     res.status(200).json({
       totalOrders,
-      totalPages,
-      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalOrders / limit),
+      currentPage: Number(page),
       from: fromDate,
-      to: toDate,
+      to: now,
       orders,
     });
-  } catch (err) {
-    console.error("Error fetching orders:", err);
-    res.status(500).json({ message: err.message });
+  } catch (error) {
+    console.error("Get orders error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
 // Get Orders by fingerprint
-exports.getOrdersByFingerPrint = async (req, res) => {
+exports.getLatestOrderByFingerPrint = async (req, res) => {
   try {
-    const { fingerPrint, page = 1, limit = 5 } = req.query;
+    const { fingerPrint } = req.query;
 
     if (!fingerPrint) {
-      return res.status(400).json({
-        message: "fingerPrint is required",
-      });
+      return res.status(400).json({ message: "fingerPrint is required" });
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    // Fetch only the latest order
+    const latestOrder = await Order.findOne({ fingerPrint })
+      .sort({ createdAt: -1 }) // newest first
+      .lean();
 
-    const [orders, total] = await Promise.all([
-      Order.find({ fingerPrint })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(Number(limit))
-        .lean(),
+    if (!latestOrder) {
+      return res
+        .status(404)
+        .json({ message: "No orders found for this fingerprint" });
+    }
 
-      Order.countDocuments({ fingerPrint }),
-    ]);
-
-    res.status(200).json({
-      page: Number(page),
-      limit: Number(limit),
-      totalOrders: total,
-      totalPages: Math.ceil(total / limit),
-      orders,
-    });
+    res.status(200).json({ order: latestOrder });
   } catch (error) {
-    console.error("Get orders by fingerprint error:", error);
-    res.status(500).json({
-      message: "Server error",
-    });
+    console.error("Get latest order by fingerprint error:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -403,7 +377,7 @@ exports.updateOrder = async (req, res) => {
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updatePayload },
-      { new: true }
+      { new: true },
     );
 
     res.status(200).json({

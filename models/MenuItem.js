@@ -54,7 +54,6 @@ const menuItemSchema = new mongoose.Schema(
       },
     ],
     comboPrice: { type: Number, default: null },
-    isCombo: { type: Boolean, default: false },
     description: String,
     image: {
       url: { type: String },
@@ -65,7 +64,7 @@ const menuItemSchema = new mongoose.Schema(
       enum: ["veg", "non-veg", "mixed"],
       required: false,
     },
-    category: String,
+    category: String, 
     available: {
       type: Boolean,
       default: true,

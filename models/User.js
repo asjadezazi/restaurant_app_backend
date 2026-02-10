@@ -12,18 +12,26 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ["user", "admin", "superadmin", "staff"],
       default: "user",
-      required: true
+      required: true,
     },
     restaurantId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Restaurant",
-      default: undefined
+      default: undefined,
     },
     qrCode: { type: String },
-    createdBy: {type: mongoose.Schema.Types.ObjectId, default: null}
+    createdBy: { type: mongoose.Schema.Types.ObjectId, default: null },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("User", userSchema);
-

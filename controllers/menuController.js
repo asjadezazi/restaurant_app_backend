@@ -33,11 +33,30 @@ exports.getMenuByTenant = async (req, res) => {
 // Get Menu details (Admin, JWT protected)
 exports.getMenuItems = async (req, res) => {
   try {
-    const user = req.user;
-    if (!user) return res.status(401).json({ message: "Unauthorized" });
-    const menuItems = await MenuItem.find({ user: user._id, deleted: false });
+    if (!req.user) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    const { role, _id, createdBy } = req.user;
+    let ownerAdminId;
+
+    if (role === "admin") {
+      ownerAdminId = _id; 
+    }
+
+    if (role === "staff") {
+      ownerAdminId = createdBy; 
+    }
+
+    const filter = {
+      user: ownerAdminId, // 🔥 admin id ALWAYS
+      deleted: false
+    };
+
+    const menuItems = await MenuItem.find(filter);
+    const totalMenuItems = await MenuItem.countDocuments(filter);
     res.status(200).json({
       message: `Menu Items fetched successfully`,
+      totalMenuItems,
       menu: menuItems,
     });
   } catch (err) {
@@ -181,32 +200,20 @@ exports.addMenuItems = async (req, res) => {
 exports.updateMenuItem = async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      name,
-      description,
-      pricingType,
-      price,
-      variantRates,
-      discount,
-      comboPrice,
-      comboItems,
-      type,
-      category,
-      available,
-    } = req.body;
+    const body = req.body;
 
-    const item = await MenuItem.findById(id);
+    // const item = await MenuItem.findById(id);
+    const item = await MenuItem.findOne({ _id: id }).lean();
+
     if (!item) return res.status(404).json({ error: "Menu item not found" });
 
     const update = {};
     const unset = {};
 
     // ---------- BASIC FIELDS ----------
-    if (name !== undefined) update.name = name;
-    if (description !== undefined) update.description = description;
-    if (type !== undefined) update.type = type;
-    if (category !== undefined) update.category = category;
-    if (available !== undefined) update.available = available;
+    ["name", "description", "type", "category", "available"].forEach((f) => {
+      if (body[f] !== undefined) update[f] = body[f];
+    });
 
     // ---------- IMAGE ----------
     if (req.file) {
@@ -221,53 +228,72 @@ exports.updateMenuItem = async (req, res) => {
     }
 
     // ---------- PRICING TYPE ----------
+    let pricingType = body.pricingType;
+
+    if (body.variantRates && pricingType !== "variant") {
+      pricingType = "variant";
+      update.pricingType = "variant";
+    }
+
     if (pricingType) update.pricingType = pricingType;
 
     // ================= SINGLE =================
     if (pricingType === "single") {
-      if (price !== undefined) update.price = price;
-      if (discount !== undefined)
-        update.discount = normalizeDiscount(discount);
+      if (body.price !== undefined) update.price = body.price;
+      if (body.discount !== undefined)
+        update.discount = normalizeDiscount(body.discount);
 
-      unset.variantRates = "";
-      unset.comboItems = "";
-      unset.comboPrice = "";
+      ["variantRates", "comboItems", "comboPrice"].forEach(
+        (f) => (unset[f] = "")
+      );
     }
 
     // ================= VARIANT =================
     if (pricingType === "variant") {
-      if (variantRates) {
-        Object.entries(variantRates).forEach(([key, value]) => {
-          if (value.price !== undefined) {
-            update[`variantRates.${key}.price`] = value.price;
-          }
-          if (value.discount !== undefined) {
-            update[`variantRates.${key}.discount`] =
-              normalizeDiscount(value.discount);
-          }
-        });
+      const allowedVariants = ["quarter", "half", "full"];
+      const variants = body.variantRates;
+
+      if (!variants || Object.keys(variants).length === 0) {
+        return res
+          .status(400)
+          .json({ error: "variantRates cannot be empty" });
       }
 
-      unset.price = "";
-      unset.discount = "";
-      unset.comboItems = "";
-      unset.comboPrice = "";
+      Object.entries(variants).forEach(([key, value]) => {
+        if (!allowedVariants.includes(key)) return;
+
+        if (value.price !== undefined)
+          update[`variantRates.${key}.price`] = value.price;
+        if (value.discount !== undefined)
+          update[`variantRates.${key}.discount`] =
+            value.discount === null
+              ? undefined
+              : normalizeDiscount(value.discount);
+
+        if (value.discount === null)
+          unset[`variantRates.${key}.discount`] = "";
+      });
+
+      ["price", "discount", "comboItems", "comboPrice"].forEach(
+        (f) => (unset[f] = "")
+      );
     }
 
     // ================= COMBO =================
     if (pricingType === "combo") {
-      if (comboPrice !== undefined) update.comboPrice = comboPrice;
-      if (comboItems !== undefined) update.comboItems = comboItems;
+      if (body.comboPrice !== undefined)
+        update.comboPrice = body.comboPrice;
+      if (body.comboItems !== undefined)
+        update.comboItems = body.comboItems;
 
       update.isCombo = true;
 
-      unset.price = "";
-      unset.discount = "";
-      unset.variantRates = "";
+      ["price", "discount", "variantRates"].forEach(
+        (f) => (unset[f] = "")
+      );
     }
 
-    // ---------- EXECUTE PATCH ----------
-    await MenuItem.findByIdAndUpdate(
+    const updatedItem = await MenuItem.findByIdAndUpdate(
       id,
       {
         ...(Object.keys(update).length && { $set: update }),
@@ -275,8 +301,6 @@ exports.updateMenuItem = async (req, res) => {
       },
       { new: true, runValidators: true }
     );
-
-    const updatedItem = await MenuItem.findById(id);
 
     res.status(200).json({
       message: "Menu item updated successfully",
@@ -287,8 +311,6 @@ exports.updateMenuItem = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
-
 
 // Delete (Soft) Menu details (Admin, JWT protected)
 exports.deleteMenuItem = async (req, res) => {
