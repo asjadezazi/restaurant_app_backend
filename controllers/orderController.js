@@ -159,11 +159,11 @@ exports.getAllOrders = async (req, res) => {
     let ownerAdminId;
 
     if (role === "admin") {
-      ownerAdminId = _id; 
+      ownerAdminId = _id;
     }
 
     if (role === "staff") {
-      ownerAdminId = createdBy; 
+      ownerAdminId = createdBy;
     }
 
     // ✅ Validate status
@@ -261,7 +261,6 @@ exports.updateOrder = async (req, res) => {
     const ALLOWED_ORDER_TYPES = ["Eat Here", "Take Away", "Delivery"];
     const SIMPLE_FIELDS = ["status", "tableId", "address", "orderType"];
 
-    // Fetch existing order (needed for items + GST calc)
     const existingOrder = await Order.findById(orderId);
     if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
@@ -269,34 +268,29 @@ exports.updateOrder = async (req, res) => {
 
     const updatePayload = {};
 
-    // Validate orderType (if provided)
     if (updates.orderType && !ALLOWED_ORDER_TYPES.includes(updates.orderType)) {
       return res.status(400).json({ message: "Invalid orderType" });
     }
 
-    // Apply simple field updates
     SIMPLE_FIELDS.forEach((field) => {
       if (updates[field] !== undefined) {
         updatePayload[field] = updates[field];
       }
     });
 
-    // Enforce orderType-specific rules
     if (updates.orderType === "Delivery") {
-      if (!updates.address) {
+      if (!updates.address)
         return res
           .status(400)
-          .json({ message: "Address is required for delivery orders" });
-      }
+          .json({ message: "Address required for Delivery" });
       updatePayload.tableId = null;
     }
 
     if (updates.orderType === "Eat Here") {
-      if (!updates.tableId) {
+      if (!updates.tableId)
         return res
           .status(400)
-          .json({ message: "Table ID is required for Eat Here orders" });
-      }
+          .json({ message: "Table ID required for Eat Here" });
       updatePayload.address = null;
     }
 
@@ -305,21 +299,30 @@ exports.updateOrder = async (req, res) => {
       updatePayload.address = null;
     }
 
-    // Recalculate items only if items are updated
+    // =====================================
+    // ✅ REMOVE ITEMS FIRST
+    // =====================================
+    let baseItems = [...existingOrder.items];
+
+    if (Array.isArray(updates.removeItemIds) && updates.removeItemIds.length) {
+      baseItems = baseItems.filter(
+        (item) => !updates.removeItemIds.includes(item._id.toString()),
+      );
+    }
+
+    // =====================================
+    // ✅ ADD / REPLACE ITEMS
+    // =====================================
     if (Array.isArray(updates.items)) {
-      if (!updates.items.length) {
-        return res
-          .status(400)
-          .json({ message: "Order must have at least one item" });
+      if (!updates.items.length && updates.replaceItems) {
+        return res.status(400).json({ message: "Order must have items" });
       }
 
       const menuItemIds = updates.items.map((i) => i.menuItemId);
-
       const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
       const menuMap = new Map(menuItems.map((m) => [m._id.toString(), m]));
 
-      let subtotal = 0;
-      const enrichedItems = [];
+      let enrichedItems = [];
 
       for (const item of updates.items) {
         const menuItem = menuMap.get(item.menuItemId);
@@ -330,20 +333,73 @@ exports.updateOrder = async (req, res) => {
         }
 
         let price;
+        let discountApplied = menuItem.discount || { type: null, value: 0 };
 
+        // ✅ SINGLE ITEM
         if (menuItem.pricingType === "single") {
-          price = menuItem.price;
-        } else {
-          const variantKey = item.variant?.toLowerCase();
-          if (!variantKey || !menuItem.variantRates[variantKey]) {
+          if (menuItem.price == null) {
+            return res.status(400).json({
+              message: `Price not set for ${menuItem.name}`,
+            });
+          }
+          price = Number(menuItem.price);
+        }
+
+        // ✅ VARIANT ITEM
+        else if (menuItem.pricingType === "variant") {
+          const variantKey = item.variant?.toLowerCase()?.trim();
+          const variantData = menuItem.variantRates?.[variantKey];
+
+          if (!variantKey || !variantData) {
             return res.status(400).json({
               message: `Invalid variant '${item.variant}' for ${menuItem.name}`,
             });
           }
-          price = menuItem.variantRates[variantKey];
+
+          if (variantData.price == null) {
+            return res.status(400).json({
+              message: `Price not set for variant '${item.variant}' of ${menuItem.name}`,
+            });
+          }
+
+          price = Number(variantData.price);
+          discountApplied = variantData.discount || discountApplied;
         }
 
-        subtotal += price * item.quantity;
+        // ✅ COMBO ITEM
+        else if (menuItem.pricingType === "combo") {
+          if (menuItem.comboPrice == null) {
+            return res.status(400).json({
+              message: `Combo price not set for ${menuItem.name}`,
+            });
+          }
+          price = Number(menuItem.comboPrice);
+        }
+
+        // ❌ UNKNOWN TYPE
+        else {
+          return res.status(400).json({
+            message: `Invalid pricingType for ${menuItem.name}`,
+          });
+        }
+
+        if (isNaN(price)) {
+          return res.status(400).json({
+            message: `Invalid price for ${menuItem.name}`,
+          });
+        }
+
+        let discountedPrice = price;
+
+        if (discountApplied?.active) {
+          if (discountApplied.type === "percentage") {
+            discountedPrice = price - (price * discountApplied.value) / 100;
+          } else if (discountApplied.type === "flat") {
+            discountedPrice = price - discountApplied.value;
+          }
+        }
+
+        discountedPrice = Math.max(Number(discountedPrice), 0);
 
         enrichedItems.push({
           menuItemId: menuItem._id,
@@ -351,29 +407,49 @@ exports.updateOrder = async (req, res) => {
           variant: menuItem.pricingType === "variant" ? item.variant : null,
           quantity: item.quantity,
           price,
+          discountedPrice,
+          discountApplied,
           customizations: item.customizations || "",
         });
       }
 
-      // GST calculation
-      const restaurant = await Restaurant.findOne({
-        user: existingOrder.user,
-        deleted: false,
-      });
+      baseItems = updates.replaceItems
+        ? enrichedItems
+        : [...baseItems, ...enrichedItems];
+    }
 
-      const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
-      const gstAmount = (subtotal * gstRate) / 100;
+    // =====================================
+    // ✅ RECALCULATE TOTALS
+    // =====================================
+    let subtotal = baseItems.reduce(
+      (sum, item) =>
+        sum +
+        Number(item.discountedPrice || item.price) * Number(item.quantity || 1),
+      0,
+    );
 
-      Object.assign(updatePayload, {
-        items: enrichedItems,
-        subtotal,
-        gstRate,
-        gstAmount,
-        totalAmount: subtotal + gstAmount,
+    if (isNaN(subtotal)) {
+      return res.status(400).json({
+        message: "Subtotal became NaN. Check variant prices.",
       });
     }
 
-    // Update order
+    const restaurant = await Restaurant.findOne({
+      user: existingOrder.user,
+      deleted: false,
+    });
+
+    const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
+    const gstAmount = (subtotal * gstRate) / 100;
+
+    Object.assign(updatePayload, {
+      items: baseItems,
+      subtotal,
+      gstRate,
+      gstAmount,
+      totalAmount: subtotal + gstAmount,
+    });
+
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updatePayload },
