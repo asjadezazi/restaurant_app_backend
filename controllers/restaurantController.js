@@ -92,7 +92,6 @@ exports.getMyRestaurantDetails = async (req, res) => {
   }
 };
 
-
 // Update restaurant details (Admin, JWT protected)
 exports.updateRestaurantDetails = async (req, res) => {
   try {
@@ -123,7 +122,7 @@ exports.updateRestaurantDetails = async (req, res) => {
       restaurant._id,
       updateData,
       { new: true },
-    );
+    ); 
 
     res.status(200).json({
       message: "Restaurant details updated successfully.",

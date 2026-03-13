@@ -9,7 +9,7 @@ const { authorizeRoles } = require("../middleware/roleMiddleware")
 // Create order client (public)
 router.post("/", getTenant, orderController.createOrder);
 // Get order client (public)
-router.get("/fingerprint", orderController.getLatestOrderByFingerPrint);
+router.get("/fingerprint", getTenant, orderController.getLatestOrderByFingerPrint);
 // Get order admin
 router.get("/", authenticate, authenticate, orderController.getAllOrders);
 // Update order

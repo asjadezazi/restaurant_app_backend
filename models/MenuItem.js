@@ -34,18 +34,18 @@ const menuItemSchema = new mongoose.Schema(
     variantRates: {
       quarter: {
         price: Number,
-        discount: discountSchema
+        discount: discountSchema,
       },
       half: {
         price: Number,
-        discount: discountSchema
+        discount: discountSchema,
       },
       full: {
         price: Number,
-        discount: discountSchema
+        discount: discountSchema,
       },
     },
-     comboItems: [
+    comboItems: [
       {
         menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "MenuItem" },
         name: { type: String },
@@ -64,8 +64,8 @@ const menuItemSchema = new mongoose.Schema(
       enum: ["veg", "non-veg", "mixed"],
       required: false,
     },
-    category: String, 
-    available: {
+    category: String,
+    available: {  
       type: Boolean,
       default: true,
     },
@@ -73,6 +73,10 @@ const menuItemSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: false,
+    },
+    displayOrder: {
+      type: Number,
+      default: 100,
     },
     deleted: { type: Boolean, default: false },
   },

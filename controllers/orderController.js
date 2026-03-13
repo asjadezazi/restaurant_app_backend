@@ -42,7 +42,7 @@ exports.createOrder = async (req, res) => {
     // 2 Build order items safely
     for (const item of items) {
       const menuItem = menuItems.find(
-        (m) => m._id.toString() === item.menuItemId,
+        (m) => m._id.toString() === item.menuItemId
       );
       if (!menuItem) {
         return res
@@ -167,10 +167,10 @@ exports.getAllOrders = async (req, res) => {
     }
 
     // ✅ Validate status
-    const allowedStatus = ["pending", "completed", "cancelled"];
+    const allowedStatus = ["pending", "preparing", "completed", "cancelled"];
     if (!status || !allowedStatus.includes(status.toLowerCase())) {
       return res.status(400).json({
-        message: "Status must be pending, completed, or cancelled",
+        message: "Status must be pending, preparing completed, or cancelled",
       });
     }
 
@@ -215,6 +215,8 @@ exports.getAllOrders = async (req, res) => {
       totalOrders,
       totalPages: Math.ceil(totalOrders / limit),
       currentPage: Number(page),
+      ordersPerPage: Number(limit),
+      ordersInPage: orders.length,
       from: fromDate,
       to: now,
       orders,
@@ -229,13 +231,21 @@ exports.getAllOrders = async (req, res) => {
 exports.getLatestOrderByFingerPrint = async (req, res) => {
   try {
     const { fingerPrint } = req.query;
+    const { tenantAdminId } = req; // coming from tenant middleware
 
     if (!fingerPrint) {
       return res.status(400).json({ message: "fingerPrint is required" });
     }
 
-    // Fetch only the latest order
-    const latestOrder = await Order.findOne({ fingerPrint })
+    if (!tenantAdminId) {
+      return res.status(400).json({ message: "Tenant not found" });
+    }
+
+    // Fetch only the latest order for this fingerprint AND this restaurant
+    const latestOrder = await Order.findOne({
+      fingerPrint,
+      user: tenantAdminId,
+    })
       .sort({ createdAt: -1 }) // newest first
       .lean();
 
@@ -306,7 +316,7 @@ exports.updateOrder = async (req, res) => {
 
     if (Array.isArray(updates.removeItemIds) && updates.removeItemIds.length) {
       baseItems = baseItems.filter(
-        (item) => !updates.removeItemIds.includes(item._id.toString()),
+        (item) => !updates.removeItemIds.includes(item._id.toString())
       );
     }
 
@@ -425,7 +435,7 @@ exports.updateOrder = async (req, res) => {
       (sum, item) =>
         sum +
         Number(item.discountedPrice || item.price) * Number(item.quantity || 1),
-      0,
+      0
     );
 
     if (isNaN(subtotal)) {
@@ -453,7 +463,7 @@ exports.updateOrder = async (req, res) => {
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updatePayload },
-      { new: true },
+      { new: true }
     );
 
     res.status(200).json({
