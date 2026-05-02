@@ -5,27 +5,25 @@ const {
   deleteFromCloudinary,
 } = require("../utils/cloudinary");
 const normalizeDiscount = require("../utils/normalizeDiscount");
+const mongoose = require("mongoose");
 
 // Get Menu details (Client, via tenant middleware)
 exports.getMenuByTenant = async (req, res) => {
   try {
     const { tenantAdminId, tenantRestaurantName } = req;
-
-    if (!tenantAdminId) {
+    if (!tenantAdminId)
       return res.status(404).json({ message: "Tenant not found" });
-    }
 
     const menuItems = await MenuItem.find({
       user: tenantAdminId,
       deleted: false,
-    });
+    }).sort({ displayOrder: 1 });
 
     res.status(200).json({
       message: `Menu Items from restaurant: ${tenantRestaurantName}`,
       menu: menuItems,
     });
   } catch (err) {
-    console.error("Get menu items error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
@@ -40,19 +38,19 @@ exports.getMenuItems = async (req, res) => {
     let ownerAdminId;
 
     if (role === "admin") {
-      ownerAdminId = _id; 
+      ownerAdminId = _id;
     }
 
     if (role === "staff") {
-      ownerAdminId = createdBy; 
+      ownerAdminId = createdBy;
     }
 
     const filter = {
       user: ownerAdminId, // 🔥 admin id ALWAYS
-      deleted: false
+      deleted: false,
     };
 
-    const menuItems = await MenuItem.find(filter);
+    const menuItems = await MenuItem.find(filter).sort({ displayOrder: 1 });
     const totalMenuItems = await MenuItem.countDocuments(filter);
     res.status(200).json({
       message: `Menu Items fetched successfully`,
@@ -123,7 +121,7 @@ exports.addMenuItems = async (req, res) => {
       ["quarter", "half", "full"].forEach((key) => {
         if (variantRates[key])
           variantRates[key].discount = normalizeDiscount(
-            variantRates[key].discount
+            variantRates[key].discount,
           );
       });
       itemData.variantRates = variantRates;
@@ -244,7 +242,7 @@ exports.updateMenuItem = async (req, res) => {
         update.discount = normalizeDiscount(body.discount);
 
       ["variantRates", "comboItems", "comboPrice"].forEach(
-        (f) => (unset[f] = "")
+        (f) => (unset[f] = ""),
       );
     }
 
@@ -254,9 +252,7 @@ exports.updateMenuItem = async (req, res) => {
       const variants = body.variantRates;
 
       if (!variants || Object.keys(variants).length === 0) {
-        return res
-          .status(400)
-          .json({ error: "variantRates cannot be empty" });
+        return res.status(400).json({ error: "variantRates cannot be empty" });
       }
 
       Object.entries(variants).forEach(([key, value]) => {
@@ -270,27 +266,22 @@ exports.updateMenuItem = async (req, res) => {
               ? undefined
               : normalizeDiscount(value.discount);
 
-        if (value.discount === null)
-          unset[`variantRates.${key}.discount`] = "";
+        if (value.discount === null) unset[`variantRates.${key}.discount`] = "";
       });
 
       ["price", "discount", "comboItems", "comboPrice"].forEach(
-        (f) => (unset[f] = "")
+        (f) => (unset[f] = ""),
       );
     }
 
     // ================= COMBO =================
     if (pricingType === "combo") {
-      if (body.comboPrice !== undefined)
-        update.comboPrice = body.comboPrice;
-      if (body.comboItems !== undefined)
-        update.comboItems = body.comboItems;
+      if (body.comboPrice !== undefined) update.comboPrice = body.comboPrice;
+      if (body.comboItems !== undefined) update.comboItems = body.comboItems;
 
       update.isCombo = true;
 
-      ["price", "discount", "variantRates"].forEach(
-        (f) => (unset[f] = "")
-      );
+      ["price", "discount", "variantRates"].forEach((f) => (unset[f] = ""));
     }
 
     const updatedItem = await MenuItem.findByIdAndUpdate(
@@ -299,7 +290,7 @@ exports.updateMenuItem = async (req, res) => {
         ...(Object.keys(update).length && { $set: update }),
         ...(Object.keys(unset).length && { $unset: unset }),
       },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     res.status(200).json({
@@ -330,6 +321,47 @@ exports.deleteMenuItem = async (req, res) => {
     res.status(200).json({ message: "Menu item soft deleted successfully" });
   } catch (err) {
     console.error("Delete error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Admin: Reorder Menu Items
+exports.reorderMenuItems = async (req, res) => {
+  try {
+    const { orderedMenuItemIds } = req.body;
+    const userId = req.user._id;
+
+    if (
+      !Array.isArray(orderedMenuItemIds) ||
+      orderedMenuItemIds.length === 0 ||
+      new Set(orderedMenuItemIds).size !== orderedMenuItemIds.length ||
+      !orderedMenuItemIds.every((id) => mongoose.Types.ObjectId.isValid(id))
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Invalid or duplicate menu item IDs." });
+    }
+
+    const count = await MenuItem.countDocuments({
+      _id: { $in: orderedMenuItemIds },
+      user: userId,
+    });
+    if (count !== orderedMenuItemIds.length) {
+      return res
+        .status(400)
+        .json({ error: "Some menu items not found or unauthorized." });
+    }
+
+    await Promise.all(
+      orderedMenuItemIds.map((id, idx) =>
+        MenuItem.updateOne(
+          { _id: id, user: userId },
+          { $set: { displayOrder: idx + 1 } },
+        ),
+      ),
+    );
+    res.json({ message: "Menu items reordered successfully" });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };

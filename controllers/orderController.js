@@ -2,6 +2,7 @@
 const Order = require("../models/Order");
 const Restaurant = require("../models/Restaurant");
 const MenuItem = require("../models/MenuItem");
+const orderEmitter = require("../events/orderEvents");
 const calculateDiscountedPrice = require("../utils/calculateDiscountedPrice");
 const normalizeDiscount = require("../utils/normalizeDiscount");
 
@@ -41,13 +42,16 @@ exports.createOrder = async (req, res) => {
 
     // 2 Build order items safely
     for (const item of items) {
-      const menuItem = menuItems.find(
-        (m) => m._id.toString() === item.menuItemId
-      );
+      const menuItem = await MenuItem.findOne({
+        _id: item.menuItemId,
+        deleted: false,
+        available: true,
+      });
+
       if (!menuItem) {
-        return res
-          .status(400)
-          .json({ message: `Menu item not found for ID ${item.menuItemId}` });
+        return res.status(400).json({
+          message: `Item not available: ${item.menuItemId}`
+        });
       }
 
       const quantity = Number(item.quantity) || 1;
@@ -138,6 +142,7 @@ exports.createOrder = async (req, res) => {
       orderType,
       address: finalAddress,
     });
+    orderEmitter.emit("orderCreated", order);
 
     res.status(201).json({ message: "Order placed successfully", order });
   } catch (error) {
@@ -166,19 +171,22 @@ exports.getAllOrders = async (req, res) => {
       ownerAdminId = createdBy;
     }
 
-    // ✅ Validate status
-    const allowedStatus = ["pending", "preparing", "completed", "cancelled"];
+    // Validate status
+    const allowedStatus = ["pending", "preparing", "ready", "completed", "cancelled"];
     if (!status || !allowedStatus.includes(status.toLowerCase())) {
       return res.status(400).json({
-        message: "Status must be pending, preparing completed, or cancelled",
+        message: "Status must be pending, preparing, ready, completed, or cancelled",
       });
     }
 
-    // 📅 Date range
+    // Date range
     const now = new Date();
     let fromDate;
 
     switch (range) {
+      case "24h":
+        fromDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
       case "2d":
         fromDate = new Date(now.getTime() - 2 * 86400000);
         break;
@@ -195,9 +203,9 @@ exports.getAllOrders = async (req, res) => {
         fromDate = new Date(0);
     }
 
-    // ✅ FINAL FILTER (single source of truth)
+    // FINAL FILTER (single source of truth)
     const filter = {
-      user: ownerAdminId, // 🔥 admin id ALWAYS
+      user: ownerAdminId, // admin id ALWAYS
       status: status.toLowerCase(),
       createdAt: { $gte: fromDate, $lte: now },
     };
@@ -269,15 +277,25 @@ exports.updateOrder = async (req, res) => {
     const updates = req.body;
 
     const ALLOWED_ORDER_TYPES = ["Eat Here", "Take Away", "Delivery"];
-    const SIMPLE_FIELDS = ["status", "tableId", "address", "orderType"];
+    const SIMPLE_FIELDS = ["tableId", "address", "orderType"];
 
     const existingOrder = await Order.findById(orderId);
     if (!existingOrder) {
       return res.status(404).json({ message: "Order not found" });
     }
 
+    // HARD LOCK
+    if (["completed", "cancelled"].includes(existingOrder.status)) {
+      return res.status(400).json({
+        message: `Cannot modify ${existingOrder.status} order`,
+      });
+    }
+
     const updatePayload = {};
 
+    // =====================================
+    // VALIDATE ORDER TYPE
+    // =====================================
     if (updates.orderType && !ALLOWED_ORDER_TYPES.includes(updates.orderType)) {
       return res.status(400).json({ message: "Invalid orderType" });
     }
@@ -288,20 +306,15 @@ exports.updateOrder = async (req, res) => {
       }
     });
 
-    if (updates.orderType === "Delivery") {
-      if (!updates.address)
-        return res
-          .status(400)
-          .json({ message: "Address required for Delivery" });
-      updatePayload.tableId = null;
+    // =====================================
+    // ORDER TYPE RULES
+    // =====================================
+    if (updates.orderType === "Delivery" && !updates.address) {
+      return res.status(400).json({ message: "Address required for Delivery" });
     }
 
-    if (updates.orderType === "Eat Here") {
-      if (!updates.tableId)
-        return res
-          .status(400)
-          .json({ message: "Table ID required for Eat Here" });
-      updatePayload.address = null;
+    if (updates.orderType === "Eat Here" && !updates.tableId) {
+      return res.status(400).json({ message: "Table ID required for Eat Here" });
     }
 
     if (updates.orderType === "Take Away") {
@@ -310,139 +323,139 @@ exports.updateOrder = async (req, res) => {
     }
 
     // =====================================
-    // ✅ REMOVE ITEMS FIRST
+    // BASE ITEMS (PLAIN)
     // =====================================
-    let baseItems = [...existingOrder.items];
+    let baseItems = existingOrder.items.map(i => i.toObject());
 
+    const existingItemMap = new Map(
+      existingOrder.items.map(i => [i.menuItemId.toString(), i])
+    );
+
+    // =====================================
+    // REMOVE ITEMS
+    // =====================================
     if (Array.isArray(updates.removeItemIds) && updates.removeItemIds.length) {
       baseItems = baseItems.filter(
-        (item) => !updates.removeItemIds.includes(item._id.toString())
+        item => !updates.removeItemIds.includes(item._id.toString())
       );
     }
 
     // =====================================
-    // ✅ ADD / REPLACE ITEMS
+    // ADD / REPLACE ITEMS
     // =====================================
     if (Array.isArray(updates.items)) {
-      if (!updates.items.length && updates.replaceItems) {
-        return res.status(400).json({ message: "Order must have items" });
+      const replaceMode = updates.replaceItems === true;
+
+      if (replaceMode) {
+        baseItems = []; // prevent duplicates
       }
 
-      const menuItemIds = updates.items.map((i) => i.menuItemId);
-      const menuItems = await MenuItem.find({ _id: { $in: menuItemIds } });
-      const menuMap = new Map(menuItems.map((m) => [m._id.toString(), m]));
+      const menuItems = await MenuItem.find({
+        _id: { $in: updates.items.map(i => i.menuItemId) },
+        deleted: false,
+        available: true,
+      });
 
-      let enrichedItems = [];
+      const menuMap = new Map(menuItems.map(m => [m._id.toString(), m]));
 
       for (const item of updates.items) {
         const menuItem = menuMap.get(item.menuItemId);
+
         if (!menuItem) {
           return res.status(400).json({
-            message: `Menu item not found: ${item.menuItemId}`,
+            message: `Item not available: ${item.menuItemId}`,
           });
         }
 
-        let price;
-        let discountApplied = menuItem.discount || { type: null, value: 0 };
+        let price = 0;
+        let discountedPrice = 0;
+        let discountApplied = null;
+        let variant = null;
 
-        // ✅ SINGLE ITEM
         if (menuItem.pricingType === "single") {
-          if (menuItem.price == null) {
-            return res.status(400).json({
-              message: `Price not set for ${menuItem.name}`,
-            });
-          }
           price = Number(menuItem.price);
+          discountedPrice = price;
+          discountApplied = menuItem.discount || { type: null, value: 0 };
         }
 
-        // ✅ VARIANT ITEM
-        else if (menuItem.pricingType === "variant") {
-          const variantKey = item.variant?.toLowerCase()?.trim();
-          const variantData = menuItem.variantRates?.[variantKey];
+        if (menuItem.pricingType === "variant") {
+          const key = item.variant?.toLowerCase();
+          const variantData = menuItem.variantRates?.[key];
 
-          if (!variantKey || !variantData) {
+          if (!variantData) {
             return res.status(400).json({
-              message: `Invalid variant '${item.variant}' for ${menuItem.name}`,
-            });
-          }
-
-          if (variantData.price == null) {
-            return res.status(400).json({
-              message: `Price not set for variant '${item.variant}' of ${menuItem.name}`,
+              message: `Invalid variant for ${menuItem.name}`,
             });
           }
 
           price = Number(variantData.price);
-          discountApplied = variantData.discount || discountApplied;
+          discountedPrice = price;
+          discountApplied = variantData.discount || { type: null, value: 0 };
+          variant = key;
         }
 
-        // ✅ COMBO ITEM
-        else if (menuItem.pricingType === "combo") {
-          if (menuItem.comboPrice == null) {
-            return res.status(400).json({
-              message: `Combo price not set for ${menuItem.name}`,
-            });
-          }
+        if (menuItem.pricingType === "combo") {
           price = Number(menuItem.comboPrice);
+          discountedPrice = price;
+          discountApplied = { type: null, value: 0 };
         }
 
-        // ❌ UNKNOWN TYPE
-        else {
-          return res.status(400).json({
-            message: `Invalid pricingType for ${menuItem.name}`,
-          });
-        }
+        const existing = existingItemMap.get(item.menuItemId);
 
-        if (isNaN(price)) {
-          return res.status(400).json({
-            message: `Invalid price for ${menuItem.name}`,
-          });
-        }
-
-        let discountedPrice = price;
-
-        if (discountApplied?.active) {
-          if (discountApplied.type === "percentage") {
-            discountedPrice = price - (price * discountApplied.value) / 100;
-          } else if (discountApplied.type === "flat") {
-            discountedPrice = price - discountApplied.value;
-          }
-        }
-
-        discountedPrice = Math.max(Number(discountedPrice), 0);
-
-        enrichedItems.push({
+        baseItems.push({
           menuItemId: menuItem._id,
           name: menuItem.name,
-          variant: menuItem.pricingType === "variant" ? item.variant : null,
-          quantity: item.quantity,
+          variant,
+          quantity: Number(item.quantity || 1),
           price,
           discountedPrice,
           discountApplied,
           customizations: item.customizations || "",
+          isReady: existing?.isReady || false, // preserve state
         });
       }
-
-      baseItems = updates.replaceItems
-        ? enrichedItems
-        : [...baseItems, ...enrichedItems];
     }
 
     // =====================================
-    // ✅ RECALCULATE TOTALS
+    // STATUS CONTROL
     // =====================================
-    let subtotal = baseItems.reduce(
-      (sum, item) =>
-        sum +
-        Number(item.discountedPrice || item.price) * Number(item.quantity || 1),
-      0
-    );
+    const manualStatus = updates.status;
 
-    if (isNaN(subtotal)) {
-      return res.status(400).json({
-        message: "Subtotal became NaN. Check variant prices.",
-      });
+    if (manualStatus) {
+      updatePayload.status = manualStatus;
+    } else {
+      const total = baseItems.length;
+      const ready = baseItems.filter(i => i.isReady).length;
+
+      if (ready === 0) updatePayload.status = "pending";
+      else if (ready < total) updatePayload.status = "preparing";
+      else updatePayload.status = "ready";
     }
+
+    // =====================================
+    // CRITICAL: SYNC ITEMS WITH STATUS
+    // =====================================
+    if (["ready", "completed"].includes(updatePayload.status)) {
+      baseItems = baseItems.map(item => ({
+        ...item,
+        isReady: true,
+      }));
+    }
+
+    if (updatePayload.status === "pending") {
+      baseItems = baseItems.map(item => ({
+        ...item,
+        isReady: false,
+      }));
+    }
+
+    // =====================================
+    // TOTAL CALCULATION
+    // =====================================
+    let subtotal = baseItems.reduce((sum, item) => {
+      const price = Number(item.discountedPrice ?? item.price);
+      return sum + price * Number(item.quantity || 1);
+    }, 0);
 
     const restaurant = await Restaurant.findOne({
       user: existingOrder.user,
@@ -452,24 +465,53 @@ exports.updateOrder = async (req, res) => {
     const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
     const gstAmount = (subtotal * gstRate) / 100;
 
+    let deliveryCharges = 0;
+    const finalOrderType = updates.orderType || existingOrder.orderType;
+
+    if (finalOrderType === "Delivery") {
+      deliveryCharges = restaurant?.deliveryCharges || 0;
+    }
+
     Object.assign(updatePayload, {
       items: baseItems,
       subtotal,
       gstRate,
       gstAmount,
-      totalAmount: subtotal + gstAmount,
+      deliveryCharges,
+      totalAmount: subtotal + gstAmount + deliveryCharges,
     });
 
+    // =====================================
+    // FINAL SAFETY FOR COMPLETED
+    // =====================================
+    if (updatePayload.status === "completed") {
+      const allReady = baseItems.every(i => i.isReady);
+      if (!allReady) {
+        return res.status(400).json({
+          message: "Cannot complete order until all items are ready",
+        });
+      }
+    }
+
+    // =====================================
+    // UPDATE DB
+    // =====================================
     const updatedOrder = await Order.findByIdAndUpdate(
       orderId,
       { $set: updatePayload },
       { new: true }
     );
 
+    // =====================================
+    // EVENT
+    // =====================================
+    orderEmitter.emit("orderUpdated", updatedOrder);
+
     res.status(200).json({
       message: "Order updated successfully",
       order: updatedOrder,
     });
+
   } catch (error) {
     console.error("Error updating order:", error);
     res.status(500).json({
@@ -477,6 +519,36 @@ exports.updateOrder = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+exports.toggleItemReady = async (req, res) => {
+  const { orderId, itemId } = req.params;
+
+  const order = await Order.findById(orderId);
+  if (!order) return res.status(404).send("Order not found");
+
+  const item = order.items.find(
+    i => i._id.toString() === itemId
+  );
+
+  if (!item) {
+    return res.status(404).send("Item not found");
+  }
+
+  item.isReady = !item.isReady;
+
+  // ensure mongoose detects change
+  order.markModified("items");
+
+  // recalc order status
+  const allReady = order.items.every(i => i.isReady);
+  order.status = allReady ? "ready" : "preparing";
+
+  const updatedOrder = await order.save();
+
+  orderEmitter.emit("orderUpdated", updatedOrder);
+
+  res.json(updatedOrder);
 };
 
 // Soft Delete an order using id from params, Admin

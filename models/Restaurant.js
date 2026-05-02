@@ -19,7 +19,10 @@ const restaurantSchema = new mongoose.Schema(
       url: { type: String },
       public_id: { type: String },
     },
-    qrCode: { type: String },
+    qrCode: {
+      url: { type: String },
+      public_id: { type: String },
+    },
     orderModes: {
       eathere: { type: Boolean, default: true },
       takeaway: { type: Boolean, default: true },

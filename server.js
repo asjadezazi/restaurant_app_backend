@@ -19,6 +19,8 @@ const start = async () => {
     await connectDB(process.env.MONGO_URL);
     console.log("✅ Database connection successful");
 
+    require("./listeners/orderListener");
+
     app.listen(port, () => {
       console.log(`✅ Server running → http://localhost:${port}`);
     });

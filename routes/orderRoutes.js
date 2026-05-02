@@ -13,9 +13,11 @@ router.get("/fingerprint", getTenant, orderController.getLatestOrderByFingerPrin
 // Get order admin
 router.get("/", authenticate, authenticate, orderController.getAllOrders);
 // Update order
-router.put("/:orderId", authenticate, authorizeRoles("admin","staff"), orderController.updateOrder);
+router.put("/:orderId", authenticate, authorizeRoles("admin", "staff"), orderController.updateOrder);
+// Toggle item status
+router.patch('/:orderId/items/:itemId/toggle-ready', authenticate, orderController.toggleItemReady);
 // Cancel order
-router.delete("/:orderId", authenticate, authorizeRoles("admin","staff"), orderController.cancelOrder);
+router.delete("/:orderId", authenticate, authorizeRoles("admin", "staff"), orderController.cancelOrder);
 
 
 // Update order status

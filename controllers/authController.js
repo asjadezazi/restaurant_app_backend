@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const Restaurant = require("../models/Restaurant");
 const generateToken = require("../utils/generateToken");
-const generateQR = require("../utils/generateQR");
+const generateAndUploadQR = require("../utils/generateQR");
 
 // Register User
 exports.registerUser = async (req, res) => {
@@ -30,12 +30,14 @@ exports.registerUser = async (req, res) => {
       case "admin": {
         if (!domain || !restaurantName) {
           return res.status(400).json({
-            message:
-              "Domain and restaurantName are required for admin registration.",
+            message: "Domain and restaurantName are required.",
           });
         }
 
-        const qrCode = await generateQR(domain);
+        const path = require("path");
+        const logoPath = path.join(__dirname, "../assets/logo.jpeg");
+
+        const qrCode = await generateAndUploadQR(domain, logoPath);
 
         const createdBy = creator ? creator._id : null;
 
@@ -50,14 +52,18 @@ exports.registerUser = async (req, res) => {
           user: admin._id,
           name,
           restaurantName,
-          qrCode,
           domain,
+          qrCode: {
+            url: qrCode.url,
+            public_id: qrCode.public_id,
+          },
         });
 
         admin.restaurantId = restaurant._id;
         await admin.save();
 
         const token = generateToken(admin._id);
+
         return res.status(201).json({
           message: "Admin registered successfully with restaurant.",
           user: {
@@ -203,127 +209,256 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// Update User (superadmin only)
 exports.updateUser = async (req, res) => {
   const { id } = req.params;
-  const updateData = { ...req.body, updatedAt: new Date() };
-  const currentUser = req.user; // From auth middleware
+
+  const updateData = {
+    ...req.body,
+    updatedAt: new Date()
+  };
+
+  const currentUser = req.user;
 
   try {
+
     const userToUpdate = await User.findById(id);
-    
+
     if (!userToUpdate) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({
+        message: "User not found"
+      });
     }
 
-    // Check if deleted
     if (userToUpdate.deleted) {
-      return res.status(400).json({ message: "Cannot update deleted user" });
-    }
-
-    // Prevent editing superadmin
-    if (userToUpdate.role === 'superadmin') {
-      return res.status(403).json({ 
-        message: "Superadmin cannot be edited" 
+      return res.status(400).json({
+        message: "Cannot update deleted user"
       });
     }
 
-    // Admin can only be edited by superadmin
-    if (userToUpdate.role === 'admin' && currentUser.role !== 'superadmin') {
-      return res.status(403).json({ 
-        message: "Only superadmin can edit admin users" 
+    if (userToUpdate.role === "superadmin") {
+      return res.status(403).json({
+        message: "Superadmin cannot be edited"
       });
     }
 
-    // Staff can be edited by superadmin or admin
-    if (userToUpdate.role === 'staff') {
-      if (currentUser.role !== 'superadmin' && currentUser.role !== 'admin') {
-        return res.status(403).json({ 
-          message: "Only superadmin or admin can edit staff users" 
-        });
-      }
+    if (
+      userToUpdate.role === "admin" &&
+      currentUser.role !== "superadmin"
+    ) {
+      return res.status(403).json({
+        message: "Only superadmin can edit admin users"
+      });
     }
 
-    // Prevent role changes
     if (updateData.role) {
       delete updateData.role;
     }
 
-    // Hash password if provided
     if (updateData.password) {
-      updateData.password = await bcrypt.hash(updateData.password, 10);
+      updateData.password = await bcrypt.hash(
+        updateData.password,
+        10
+      );
     }
 
-    // For ADMIN users: update both User and Restaurant
-    if (userToUpdate.role === 'admin') {
-      const { qrcode, restaurantName, ...userUpdateData } = updateData;
-      
-      // Update user (name is included in userUpdateData)
-      const updatedUser = await User.findByIdAndUpdate(
-        id,
-        { $set: userUpdateData },
-        { new: true, runValidators: true }
-      ).select('-password');
+    // ---------------------------
+    // ADMIN USER UPDATE + MANUAL ROLLBACK
+    // ---------------------------
 
-      // Prepare restaurant update data
-      const restaurantUpdateData = {};
-      
-      // If name is provided, update it in restaurant too
-      if (updateData.name) restaurantUpdateData.name = updateData.name;
-      if (qrcode) restaurantUpdateData.qrcode = qrcode;
-      if (restaurantName) restaurantUpdateData.restaurantName = restaurantName;
-      
-      // Only update restaurant if there's data to update
-      if (Object.keys(restaurantUpdateData).length > 0) {
-        restaurantUpdateData.updatedAt = new Date();
+    if (userToUpdate.role === "admin") {
 
-        const updatedRestaurant = await Restaurant.findOneAndUpdate(
-          { user: id },
-          { $set: restaurantUpdateData },
-          { new: true }
-        );
+      // Domain uniqueness check
+      if (updateData.domain) {
+        const existingDomainUser =
+          await User.findOne({
+            domain: updateData.domain,
+            _id: { $ne: id }
+          });
 
-        if (!updatedRestaurant) {
-          return res.status(404).json({ 
-            message: "User updated but restaurant not found for this admin" 
+        if (existingDomainUser) {
+          return res.status(400).json({
+            message: "Domain already exists"
           });
         }
-
-        return res.status(200).json({ 
-          message: "User and restaurant updated successfully", 
-          user: updatedUser,
-          restaurant: updatedRestaurant
-        });
       }
 
-      return res.status(200).json({ 
-        message: "User updated successfully", 
-        user: updatedUser 
-      });
+      // Backup originals for rollback
+      const originalUser =
+        await User.findById(id).lean();
+
+      const originalRestaurant =
+        await Restaurant.findOne({
+          user: id
+        }).lean();
+
+      try {
+
+        // Update user first
+        const updatedUser =
+          await User.findByIdAndUpdate(
+            id,
+            { $set: updateData },
+            {
+              new: true,
+              runValidators: true
+            }
+          ).select("-password");
+
+        if (!updatedUser) {
+          throw new Error(
+            "User update failed"
+          );
+        }
+
+        // Prepare restaurant sync fields
+        const restaurantUpdateData = {
+          updatedAt: new Date()
+        };
+
+        if (updateData.name) {
+          restaurantUpdateData.name =
+            updateData.name;
+        }
+
+        if (updateData.restaurantName) {
+          restaurantUpdateData.restaurantName =
+            updateData.restaurantName;
+        }
+
+        if (updateData.domain) {
+          restaurantUpdateData.domain =
+            updateData.domain;
+        }
+
+        if (updateData.qrcode) {
+          restaurantUpdateData.qrcode =
+            updateData.qrcode;
+        }
+
+        if (
+          Object.keys(
+            restaurantUpdateData
+          ).length > 1
+        ) {
+          const updatedRestaurant =
+            await Restaurant.findOneAndUpdate(
+              { user: id },
+              {
+                $set:
+                  restaurantUpdateData
+              },
+              {
+                new: true
+              }
+            );
+
+          if (!updatedRestaurant) {
+            throw new Error(
+              "Restaurant update failed"
+            );
+          }
+        }
+
+        const finalUser =
+          await User.findById(id)
+            .select("-password");
+
+        const finalRestaurant =
+          await Restaurant.findOne({
+            user: id
+          });
+
+        return res.status(200).json({
+          message:
+            "User and restaurant updated successfully",
+          user: finalUser,
+          restaurant: finalRestaurant
+        });
+
+      } catch (innerErr) {
+
+        console.error(
+          "Rolling back changes...",
+          innerErr
+        );
+
+        // MANUAL ROLLBACK USER
+        if (originalUser) {
+
+          const rollbackUser = {
+            ...originalUser
+          };
+
+          delete rollbackUser._id;
+
+          await User.findByIdAndUpdate(
+            id,
+            rollbackUser
+          );
+        }
+
+        // MANUAL ROLLBACK RESTAURANT
+        if (originalRestaurant) {
+
+          const rollbackRestaurant = {
+            ...originalRestaurant
+          };
+
+          delete rollbackRestaurant._id;
+
+          await Restaurant.findOneAndUpdate(
+            { user: id },
+            rollbackRestaurant
+          );
+        }
+
+        return res.status(500).json({
+          message:
+            "Update failed. Changes rolled back.",
+          error: innerErr.message
+        });
+      }
     }
 
-    // For STAFF and other users: update normally
-    const updatedUser = await User.findByIdAndUpdate(
-      id,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    ).select('-password');
+    // ---------------------------
+    // STAFF / OTHER USERS
+    // ---------------------------
 
-    res.status(200).json({ 
-      message: "User updated successfully", 
-      user: updatedUser 
+    const updatedUser =
+      await User.findByIdAndUpdate(
+        id,
+        { $set: updateData },
+        {
+          new: true,
+          runValidators: true
+        }
+      ).select("-password");
+
+    return res.status(200).json({
+      message: "User updated successfully",
+      user: updatedUser
     });
 
   } catch (err) {
-    console.error("Update error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
+
+    console.error(
+      "Update error:",
+      err
+    );
+
+    return res.status(500).json({
+      message:
+        err.message ||
+        "Server error",
+      error: err.message
+    });
   }
 };
 
 // Get all admins (superadmin only)
 exports.getAllAdmins = async (req, res) => {
   try {
-    const admins = await User.find({ role: "admin" }).lean();
+    const admins = await User.find({ role: "admin", isDeleted: false }).lean();
 
     res.status(200).json({
       message: "Admins fetched successfully",
@@ -339,7 +474,7 @@ exports.getAllAdmins = async (req, res) => {
 // Get all staff (superadmin only)
 exports.getAllStaff = async (req, res) => {
   try {
-    const staff = await User.find({ role: "staff" }).lean();
+    const staff = await User.find({ role: "staff", isDeleted: false }).lean();
     res.status(200).json({
       message: "Staff fetched successfully",
       count: staff.length,
@@ -384,7 +519,7 @@ exports.deleteUser = async (req, res) => {
 
   try {
     const userToDelete = await User.findById(id);
-    
+
     if (!userToDelete) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -397,31 +532,31 @@ exports.deleteUser = async (req, res) => {
 
     // Prevent deleting superadmin
     if (userToDelete.role === 'superadmin') {
-      return res.status(403).json({ 
-        message: "Superadmin cannot be deleted" 
+      return res.status(403).json({
+        message: "Superadmin cannot be deleted"
       });
     }
 
     // Admin can only be deleted by superadmin
     if (userToDelete.role === 'admin' && currentUser.role !== 'superadmin') {
-      return res.status(403).json({ 
-        message: "Only superadmin can delete admin users" 
+      return res.status(403).json({
+        message: "Only superadmin can delete admin users"
       });
     }
 
     // Staff can be deleted by superadmin or admin
     if (userToDelete.role === 'staff') {
       if (currentUser.role !== 'superadmin' && currentUser.role !== 'admin') {
-        return res.status(403).json({ 
-          message: "Only superadmin or admin can delete staff users" 
+        return res.status(403).json({
+          message: "Only superadmin or admin can delete staff users"
         });
       }
     }
 
     // Prevent self-deletion
     if (userToDelete._id.toString() === currentUser._id.toString()) {
-      return res.status(403).json({ 
-        message: "You cannot delete your own account" 
+      return res.status(403).json({
+        message: "You cannot delete your own account"
       });
     }
 

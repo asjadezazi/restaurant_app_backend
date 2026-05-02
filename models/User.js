@@ -19,7 +19,6 @@ const userSchema = new mongoose.Schema(
       ref: "Restaurant",
       default: undefined,
     },
-    qrCode: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, default: null },
     isDeleted: {
       type: Boolean,

@@ -3,8 +3,9 @@ const {
   uploadToCloudinary,
   deleteFromCloudinary,
 } = require("../utils/cloudinary");
+const MenuItem = require("../models/MenuItem");
 
-// Get restaurant details (Client, via tenant middleware)
+// Retrieve restaurant details for clients based on domain (tenant middleware)
 exports.getRestaurantDetails = async (req, res) => {
   try {
     const host = req.frontendHost; // from middleware
@@ -21,6 +22,13 @@ exports.getRestaurantDetails = async (req, res) => {
       return res.status(404).json({ message: "Restaurant not found" });
     }
 
+    // Sort categories by displayOrder if present
+    if (Array.isArray(restaurant.categories)) {
+      restaurant.categories = [...restaurant.categories].sort(
+        (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0),
+      );
+    }
+
     res.status(200).json({
       restaurant,
     });
@@ -30,29 +38,7 @@ exports.getRestaurantDetails = async (req, res) => {
   }
 };
 
-// Get restaurant details (Admin, JWT protected)
-exports.getAdminRestaurantDetails = async (req, res) => {
-  try {
-    const user = req.user; // JWT middleware sets req.user
-    if (!user) return res.status(401).json({ message: "Unauthorized" });
-
-    // Find restaurant linked to this admin
-    const restaurant = await Restaurant.findOne({
-      user: user._id,
-      deleted: false,
-    });
-    if (!restaurant)
-      return res.status(404).json({ message: "Restaurant not found." });
-
-    res.status(200).json({
-      restaurant,
-    });
-  } catch (err) {
-    console.error("Admin restaurant details error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
-  }
-};
-
+// Retrieve restaurant details for logged-in admin or staff (JWT protected)
 exports.getMyRestaurantDetails = async (req, res) => {
   try {
     if (!req.user) {
@@ -85,6 +71,13 @@ exports.getMyRestaurantDetails = async (req, res) => {
       return res.status(404).json({ message: "Restaurant not found" });
     }
 
+    // Sort categories by displayOrder if present
+    if (Array.isArray(restaurant.categories)) {
+      restaurant.categories = [...restaurant.categories].sort(
+        (a, b) => (a.displayOrder || 0) - (b.displayOrder || 0),
+      );
+    }
+
     res.json({ success: true, data: restaurant });
   } catch (error) {
     console.error("Get restaurant error 👉", error);
@@ -95,17 +88,35 @@ exports.getMyRestaurantDetails = async (req, res) => {
 // Update restaurant details (Admin, JWT protected)
 exports.updateRestaurantDetails = async (req, res) => {
   try {
-    const user = req.user; // logged-in user from JWT
+    const user = req.user;
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    // Find restaurant linked to this user
     const restaurant = await Restaurant.findOne({ user: user._id });
     if (!restaurant)
       return res.status(404).json({ message: "Restaurant not found." });
 
-    // Prepare fields to update
     const updateData = { ...req.body, updatedAt: new Date() };
+if (req.body.categories !== undefined) {
+  let categories = req.body.categories;
 
+  // Ensure array
+  if (!Array.isArray(categories)) {
+    categories = [categories];
+  }
+
+  // Convert to correct structure
+  updateData.categories = categories
+    .filter((cat) => cat && cat !== "")
+    .map((cat, index) => {
+      if (typeof cat === "string") {
+        return { name: cat, displayOrder: index };
+      }
+      return {
+        name: cat.name || "",
+        displayOrder: cat.displayOrder ?? index,
+      };
+    });
+}
     // Handle logo update
     if (req.file) {
       if (restaurant.logo?.public_id) {
@@ -117,15 +128,52 @@ exports.updateRestaurantDetails = async (req, res) => {
       updateData.logo = { url: result.secure_url, public_id: result.public_id };
     }
 
+    // Find removed categories BEFORE updating
+    const oldCategories = restaurant.categories.map((cat) => cat.name);
+    const newCategories = Array.isArray(updateData.categories)
+      ? updateData.categories.map((cat) => cat.name)
+      : oldCategories;
+
+    const removedCategories = oldCategories.filter(
+      (cat) => !newCategories.includes(cat),
+    );
+
+    console.log("Old categories:", oldCategories);
+    console.log("New categories:", newCategories);
+    console.log("Removed categories:", removedCategories);
+
     // Update restaurant
     const updatedRestaurant = await Restaurant.findByIdAndUpdate(
       restaurant._id,
       updateData,
       { new: true },
-    ); 
+    );
+
+    // Soft delete menu items for removed categories (case insensitive)
+    let extraMessage = "";
+    if (removedCategories.length > 0) {
+      const regexCategories = removedCategories.map(
+        (cat) => new RegExp(`^${cat}$`, "i"),
+      );
+
+      // Debug — check what items will be deleted
+      const itemsToDelete = await MenuItem.find({
+        user: user._id,
+        category: { $in: regexCategories },
+        deleted: false,
+      });
+      console.log("Menu items to be deleted:", itemsToDelete);
+
+      await MenuItem.updateMany(
+        { user: user._id, category: { $in: regexCategories }, deleted: false },
+        { $set: { deleted: true } },
+      );
+
+      extraMessage = ` Categories [${removedCategories.join(", ")}] and their related menu items have also been deleted.`;
+    }
 
     res.status(200).json({
-      message: "Restaurant details updated successfully.",
+      message: "Restaurant details updated successfully." + extraMessage,
       restaurant: updatedRestaurant,
     });
   } catch (err) {
@@ -136,7 +184,7 @@ exports.updateRestaurantDetails = async (req, res) => {
   }
 };
 
-// Delete restaurant (Admin, JWT protected)
+// Delete restaurant (soft delete, Admin, JWT protected)
 exports.deleteRestaurant = async (req, res) => {
   try {
     const user = req.user;
@@ -157,7 +205,7 @@ exports.deleteRestaurant = async (req, res) => {
   }
 };
 
-// Update GST Setting (Admin, JWT protected)
+// Update GST settings (Admin, JWT protected)
 exports.updateGstSettings = async (req, res) => {
   try {
     const { gstEnabled, gstRate } = req.body || {};
@@ -203,7 +251,7 @@ exports.updateGstSettings = async (req, res) => {
   }
 };
 
-// Update isOpen Setting (Admin, JWT protected)
+// Update restaurant open status (Admin, JWT protected)
 exports.updateRestaurantStatus = async (req, res) => {
   try {
     const user = req.user; // Logged-in user (from JWT middleware)
@@ -237,5 +285,57 @@ exports.updateRestaurantStatus = async (req, res) => {
     res
       .status(500)
       .json({ message: "Internal server error.", error: err.message });
+  }
+};
+
+// Reorder categories (Admin, JWT protected)
+exports.reorderCategories = async (req, res) => {
+  try {
+    const { orderedCategoryNames } = req.body;
+    const userId = req.user._id;
+
+    if (
+      !Array.isArray(orderedCategoryNames) ||
+      orderedCategoryNames.length === 0 ||
+      new Set(orderedCategoryNames).size !== orderedCategoryNames.length
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Invalid or duplicate category names." });
+    }
+
+    const restaurant = await Restaurant.findOne({
+      user: userId,
+      deleted: false,
+    });
+    if (!restaurant)
+      return res.status(404).json({ message: "Restaurant not found" });
+
+    const categoryNames = restaurant.categories.map((cat) => cat.name);
+    if (
+      orderedCategoryNames.length !== categoryNames.length ||
+      !orderedCategoryNames.every((name) => categoryNames.includes(name))
+    ) {
+      return res
+        .status(400)
+        .json({ error: "Some category names are invalid." });
+    }
+
+    restaurant.categories.sort(
+      (a, b) =>
+        orderedCategoryNames.indexOf(a.name) -
+        orderedCategoryNames.indexOf(b.name),
+    );
+    restaurant.categories.forEach((cat, idx) => {
+      cat.displayOrder = idx + 1;
+    });
+
+    await restaurant.save();
+    res.json({
+      message: "Categories reordered successfully",
+      categories: restaurant.categories,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };

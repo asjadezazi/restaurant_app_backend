@@ -42,11 +42,12 @@ const orderSchema = new mongoose.Schema({
         type: String,
         default: "",
       },
+      isReady: { type: Boolean, default: false },
     },
   ],
   status: {
     type: String,
-    enum: ["pending", "preparing", "completed", "cancelled"],
+    enum: ["pending", "preparing", "ready", "completed", "cancelled"],
     default: "pending",
   },
   orderType: {
