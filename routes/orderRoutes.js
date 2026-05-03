@@ -8,6 +8,8 @@ const { authorizeRoles } = require("../middleware/roleMiddleware")
 
 // Create order client (public)
 router.post("/", getTenant, orderController.createOrder);
+// Create Order admin
+router.post("/protected", authenticate, authorizeRoles("admin", "staff"), orderController.createOrderByAdminOrStaff);
 // Get order client (public)
 router.get("/fingerprint", getTenant, orderController.getLatestOrderByFingerPrint);
 // Get order admin

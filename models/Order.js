@@ -6,15 +6,43 @@ const orderSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
+
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    default: null,
+  },
+
+  createdByRole: {
+    type: String,
+    enum: ["admin", "staff", "user"],
+    default: "user",
+  },
+
   fingerPrint: {
     type: String,
     required: false,
     index: true,
   },
-  customerName: { type: String, required: true },
-  customerPhone: { type: String, required: true },
-  address: { type: String },
-  tableId: { type: String },
+
+  customerName: {
+    type: String,
+    required: true,
+  },
+
+  customerPhone: {
+    type: String,
+    required: true,
+  },
+
+  address: {
+    type: String,
+  },
+
+  tableId: {
+    type: String,
+  },
+
   items: [
     {
       menuItemId: {
@@ -22,11 +50,31 @@ const orderSchema = new mongoose.Schema({
         ref: "MenuItem",
         required: true,
       },
-      name: { type: String, required: true },
-      variant: { type: String, required: false },
-      quantity: { type: Number, required: true },
-      price: { type: Number, required: true },
-      discountedPrice: { type: Number, required: true },
+
+      name: {
+        type: String,
+        required: true,
+      },
+
+      variant: {
+        type: String,
+      },
+
+      quantity: {
+        type: Number,
+        required: true,
+      },
+
+      price: {
+        type: Number,
+        required: true,
+      },
+
+      discountedPrice: {
+        type: Number,
+        required: true,
+      },
+
       discountApplied: {
         type: {
           type: String,
@@ -38,29 +86,60 @@ const orderSchema = new mongoose.Schema({
           default: 0,
         },
       },
+
       customizations: {
         type: String,
         default: "",
       },
-      isReady: { type: Boolean, default: false },
+
+      isReady: {
+        type: Boolean,
+        default: false,
+      },
     },
   ],
+
   status: {
     type: String,
     enum: ["pending", "preparing", "ready", "completed", "cancelled"],
     default: "pending",
   },
+
   orderType: {
     type: String,
     enum: ["Eat Here", "Take Away", "Delivery"],
     required: true,
   },
-  subtotal: { type: Number, required: true },
-  deliveryCharges: { type: Number, default: 0 },
-  gstRate: { type: Number, required: true },
-  gstAmount: { type: Number, required: true },
-  totalAmount: { type: Number, required: true },
-  createdAt: { type: Date, default: Date.now },
+
+  subtotal: {
+    type: Number,
+    required: true,
+  },
+
+  deliveryCharges: {
+    type: Number,
+    default: 0,
+  },
+
+  gstRate: {
+    type: Number,
+    required: true,
+  },
+
+  gstAmount: {
+    type: Number,
+    required: true,
+  },
+
+  totalAmount: {
+    type: Number,
+    required: true,
+  },
+
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
 });
 
 module.exports = mongoose.model("Order", orderSchema);

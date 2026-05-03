@@ -5,149 +5,78 @@ const MenuItem = require("../models/MenuItem");
 const orderEmitter = require("../events/orderEvents");
 const calculateDiscountedPrice = require("../utils/calculateDiscountedPrice");
 const normalizeDiscount = require("../utils/normalizeDiscount");
+const { createOrderService } = require("../services/order.service")
 
 // Create Order ( Client, via tenantMiddleware)
 exports.createOrder = async (req, res) => {
   try {
     const { tenantAdminId } = req;
-    if (!tenantAdminId) {
-      return res.status(404).json({ message: "Restaurant/admin not found" });
-    }
 
-    const {
-      fingerPrint,
-      customerName,
-      customerPhone,
-      items,
-      tableId,
-      orderType,
-      address,
-    } = req.body;
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "Order must contain at least one item." });
-    }
-
-    // 1 Fetch menu items
-    const menuItems = await MenuItem.find({
-      _id: { $in: items.map((i) => i.menuItemId) },
-      deleted: false,
-      available: true,
+    const order = await createOrderService({
+      tenantAdminId,
+      ...req.body,
+      createdBy: null,
+      createdByRole: "user",
     });
 
-    let subtotal = 0;
-    const orderItems = [];
-
-    // 2 Build order items safely
-    for (const item of items) {
-      const menuItem = await MenuItem.findOne({
-        _id: item.menuItemId,
-        deleted: false,
-        available: true,
-      });
-
-      if (!menuItem) {
-        return res.status(400).json({
-          message: `Item not available: ${item.menuItemId}`
-        });
-      }
-
-      const quantity = Number(item.quantity) || 1;
-      let basePrice;
-      let discountedPrice = 0;
-      let discountSnapshot = null;
-      let variant = null;
-
-      // ---- SINGLE PRICING ----
-      if (menuItem.pricingType === "single") {
-        basePrice = Number(menuItem.price) || 0;
-        const discountObj = normalizeDiscount(menuItem.discount);
-        discountedPrice = calculateDiscountedPrice(basePrice, discountObj);
-        discountSnapshot = discountObj;
-      }
-      // ---- VARIANT PRICING ----
-      else if (menuItem.pricingType === "variant") {
-        const variantKey = item.variant?.toLowerCase();
-        if (!variantKey || !menuItem.variantRates[variantKey]) {
-          return res
-            .status(400)
-            .json({ message: `Invalid variant for ${menuItem.name}` });
-        }
-
-        const variantData = menuItem.variantRates[variantKey];
-        basePrice = Number(variantData.price) || 0;
-        const discountObj = normalizeDiscount(variantData.discount);
-        discountedPrice = calculateDiscountedPrice(basePrice, discountObj);
-        discountSnapshot = discountObj;
-        variant = variantKey;
-      }
-      // ---- COMBO PRICING ----
-      else if (menuItem.pricingType === "combo") {
-        basePrice = Number(menuItem.comboPrice) || 0;
-        discountedPrice = basePrice;
-        discountSnapshot = {
-          type: null,
-          value: 0,
-        };
-      }
-
-      // Add to subtotal safely
-      subtotal += discountedPrice * quantity;
-
-      // Push item to order
-      orderItems.push({
-        menuItemId: menuItem._id,
-        name: menuItem.name,
-        variant,
-        quantity,
-        price: basePrice,
-        discountedPrice,
-        discountApplied: discountSnapshot,
-        customizations: item.customizations || "",
-      });
-    }
-
-    // 3 GST and Delivery Charges calculation
-    const restaurant = await Restaurant.findOne({
-      user: tenantAdminId,
-      deleted: false,
-    });
-
-    const gstRate = restaurant?.gstEnabled ? restaurant.gstRate : 0;
-    const deliveryCharges =
-      orderType === "Delivery" ? Number(restaurant?.deliveryCharges || 0) : 0;
-
-    const gstAmount = (Number(subtotal) * (gstRate || 0)) / 100;
-    const totalAmount = Number(subtotal) + Number(gstAmount) + deliveryCharges;
-
-    // 4 OrderType cleanup
-    const finalTableId = orderType === "Eat Here" ? tableId : null;
-    const finalAddress = orderType === "Delivery" ? address : null;
-
-    // 5 Create Order
-    const order = await Order.create({
-      user: tenantAdminId,
-      fingerPrint,
-      customerName,
-      customerPhone,
-      items: orderItems,
-      subtotal,
-      gstRate,
-      gstAmount,
-      deliveryCharges,
-      totalAmount,
-      tableId: finalTableId,
-      orderType,
-      address: finalAddress,
-    });
     orderEmitter.emit("orderCreated", order);
 
-    res.status(201).json({ message: "Order placed successfully", order });
+    res.status(201).json({
+      message: "Order placed successfully",
+      order,
+    });
   } catch (error) {
     console.error("Create order error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+exports.createOrderByAdminOrStaff = async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { _id: creatorId, role, createdBy } = req.user;
+
+    // ✅ Resolve restaurant owner (adminId)
+    const tenantAdminId =
+      role === "admin" ? creatorId : createdBy;
+
+    if (!tenantAdminId) {
+      return res.status(400).json({
+        message: "Restaurant/admin mapping not found",
+      });
+    }
+
+    // ✅ Prepare payload
+    const payload = {
+      tenantAdminId,
+      ...req.body,
+      createdBy: creatorId,
+      createdByRole: role,
+    };
+
+    // ❌ Remove fingerprint (only for public users)
+    if (payload.fingerPrint) {
+      delete payload.fingerPrint;
+    }
+
+    const order = await createOrderService(payload);
+
+    orderEmitter.emit("orderCreated", order);
+
+    res.status(201).json({
+      message: "Order created successfully",
+      order,
+    });
+  } catch (error) {
+    console.error("Admin/Staff order error:", error);
+    res.status(500).json({
+      message: error.message || "Server error",
+    });
   }
 };
 
