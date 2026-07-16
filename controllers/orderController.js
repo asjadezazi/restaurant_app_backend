@@ -1177,12 +1177,22 @@ exports.updateOrder = async (req, res) => {
 
         updatePayload.status = existingOrder.status;
       } else {
+
         if (updates.status === "ready") {
           baseItems = baseItems.map(item => ({
             ...item,
             isReady: true,
           }));
         }
+
+        if (updates.status === "pending") {
+          baseItems = baseItems.map(item => ({
+            ...item,
+            isReady: false,
+          }));
+        }
+
+        // preparing -> keep individual item readiness unchanged
 
         updatePayload.status = updates.status;
       }
@@ -1382,11 +1392,15 @@ exports.toggleItemReady = async (req, res) => {
       );
     }
 
-    orderEmitter.emit("orderUpdated", {
-      user: updatedOrder.user,
-      action: "ITEM_READY_TOGGLED",
-      order: updatedOrder.toObject(),
-    });
+    // orderEmitter.emit("orderUpdated", {
+    //   user: updatedOrder.user,
+    //   action: "ITEM_READY_TOGGLED",
+    //   order: updatedOrder.toObject(),
+    // });
+    orderEmitter.emit(
+    "orderUpdated",
+    updatedOrder.toObject()
+);
 
     return res.status(200).json(updatedOrder);
   } catch (error) {
@@ -1709,15 +1723,15 @@ exports.moveOrder = async (req, res) => {
     // ✅ Preserve old occupancy before clearing it
     const oldOccupancy = oldUnit?.occupancy
       ? {
-          checkInTime:
-            oldUnit.occupancy.checkInTime,
-          checkOutTime:
-            oldUnit.occupancy.checkOutTime,
-        }
+        checkInTime:
+          oldUnit.occupancy.checkInTime,
+        checkOutTime:
+          oldUnit.occupancy.checkOutTime,
+      }
       : {
-          checkInTime: null,
-          checkOutTime: null,
-        };
+        checkInTime: null,
+        checkOutTime: null,
+      };
 
     // OLD CLEANUP
     if (oldUnit) {
