@@ -66,6 +66,12 @@ exports.createOrder = async (req, res) => {
         return res.status(404).json({ message: "Unit not found" });
       }
 
+      if (!resolvedUnit.isActive) {
+        return res.status(403).json({
+          message: "This table/room is currently inactive and cannot accept orders",
+        });
+      }
+
       // For rooms, booking must already exist
       if (resolvedUnit.type === "ROOM") {
         existingOrder = await Order.findOne({
@@ -169,7 +175,7 @@ exports.createOrder = async (req, res) => {
     }
 
     // Enforce fingerprint ownership for Eat Here orders
-    if (orderType === "Eat Here") {
+    if (orderType === "Eat Here" || "Room Stay") {
       if (
         existingOrder.fingerPrint &&
         existingOrder.fingerPrint !== fingerPrint
@@ -498,6 +504,12 @@ exports.createOrderByAdminOrStaff = async (req, res) => {
       if (!resolvedUnit) {
         return res.status(404).json({
           message: "Unit not found",
+        });
+      }
+
+      if (!resolvedUnit.isActive) {
+        return res.status(403).json({
+          message: "This table/room is currently inactive and cannot accept orders",
         });
       }
 
@@ -1398,9 +1410,9 @@ exports.toggleItemReady = async (req, res) => {
     //   order: updatedOrder.toObject(),
     // });
     orderEmitter.emit(
-    "orderUpdated",
-    updatedOrder.toObject()
-);
+      "orderUpdated",
+      updatedOrder.toObject()
+    );
 
     return res.status(200).json(updatedOrder);
   } catch (error) {

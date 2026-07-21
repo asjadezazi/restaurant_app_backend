@@ -1,6 +1,6 @@
 {
   "name": "tapnbite",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Real Time Notification",
   "main": "app.js",
   "scripts": {
