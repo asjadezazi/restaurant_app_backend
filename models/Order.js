@@ -196,10 +196,22 @@ const orderSchema = new mongoose.Schema(
       default: null,
     },
 
-    paymentMethod: {
-      type: String,
-      enum: ["CASH", "UPI", "CARD"],
-      default: null,
+    paymentMethods: {
+      type: [
+        {
+          method: {
+            type: String,
+            enum: ["CASH", "UPI", "CARD"],
+            required: true,
+          },
+          amount: {
+            type: Number,
+            required: true,
+            min: 0,
+          },
+        },
+      ],
+      default: [],
     },
     completedAt: Date,
     deleted: {

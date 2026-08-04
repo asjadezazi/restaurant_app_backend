@@ -1829,21 +1829,38 @@ exports.moveOrder = async (req, res) => {
 exports.payOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { paymentMethod, settlementAmount } = req.body;
+    const { paymentMethods, settlementAmount } = req.body;
 
-    // VALIDATE PAYMENT METHOD
     const ALLOWED_METHODS = ["CASH", "UPI", "CARD"];
 
-    if (!paymentMethod) {
+    // VALIDATE PAYMENT METHODS
+    if (
+      !Array.isArray(paymentMethods) ||
+      paymentMethods.length === 0
+    ) {
       return res.status(400).json({
-        message: "paymentMethod is required",
+        message: "At least one payment method is required",
       });
     }
 
-    if (!ALLOWED_METHODS.includes(paymentMethod)) {
-      return res.status(400).json({
-        message: "Invalid payment method",
-      });
+    let paidAmount = 0;
+
+    for (const payment of paymentMethods) {
+      if (!ALLOWED_METHODS.includes(payment.method)) {
+        return res.status(400).json({
+          message: `Invalid payment method: ${payment.method}`,
+        });
+      }
+
+      const amount = Number(payment.amount);
+
+      if (isNaN(amount) || amount <= 0) {
+        return res.status(400).json({
+          message: `Invalid amount for ${payment.method}`,
+        });
+      }
+
+      paidAmount += amount;
     }
 
     // FETCH ORDER
@@ -1856,7 +1873,7 @@ exports.payOrder = async (req, res) => {
     }
 
     // PREVENT DOUBLE PAYMENT
-    if (order.paymentMethod !== null) {
+    if (order.paymentMethods?.length > 0) {
       return res.status(400).json({
         message: "Payment already completed",
       });
@@ -1888,8 +1905,20 @@ exports.payOrder = async (req, res) => {
       order.settlementAmount = amt;
     }
 
+    // TOTAL PAID MUST MATCH PAYABLE AMOUNT
+    const expectedAmount =
+      order.settlementAmount != null
+        ? order.settlementAmount
+        : order.totalAmount;
+
+    if (paidAmount !== expectedAmount) {
+      return res.status(400).json({
+        message: `Total payment amount must equal ₹${expectedAmount}`,
+      });
+    }
+
     // SAVE PAYMENT
-    order.paymentMethod = paymentMethod;
+    order.paymentMethods = paymentMethods;
 
     // HANDLE UNIT (ONLY TABLE / ROOM)
     if (order.source.type === "TABLE" || order.source.type === "ROOM") {
@@ -1916,14 +1945,14 @@ exports.payOrder = async (req, res) => {
         }
       }
 
-      //  Ensure billed state before freeing
+      // Ensure billed state before freeing
       if (!resolvedUnit || resolvedUnit.status !== "BILLED") {
         return res.status(400).json({
           message: "Unit is not in billed state",
         });
       }
 
-      //  FREE UNIT
+      // FREE UNIT
       resolvedUnit.status = "AVAILABLE";
       resolvedUnit.currentOrderId = null;
       resolvedUnit.occupancy = {
@@ -1932,25 +1961,23 @@ exports.payOrder = async (req, res) => {
       };
 
       await restaurant.save();
-      occupancyEmitter.emit(
-        "occupancyChanged",
-        {
-          user: restaurant.user,
-          action:
-            order.source.type === "ROOM"
-              ? "ROOM_RELEASED"
-              : "TABLE_RELEASED",
-          unitId: resolvedUnit._id,
-          orderId: order._id,
-          sectionName: resolvedSection.name,
-          unitName: resolvedUnit.name,
-        }
-      );
+
+      occupancyEmitter.emit("occupancyChanged", {
+        user: restaurant.user,
+        action:
+          order.source.type === "ROOM"
+            ? "ROOM_RELEASED"
+            : "TABLE_RELEASED",
+        unitId: resolvedUnit._id,
+        orderId: order._id,
+        sectionName: resolvedSection.name,
+        unitName: resolvedUnit.name,
+      });
     }
 
     await order.save();
-    orderEmitter.emit("orderUpdated", order.toObject());
 
+    orderEmitter.emit("orderUpdated", order.toObject());
 
     return res.status(200).json({
       message: "Payment successful",
