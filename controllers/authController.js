@@ -16,7 +16,10 @@ exports.registerUser = async (req, res) => {
         .json({ message: "Name, email, password, and role are required." });
     }
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({
+      email,
+      isDeleted: false,
+    });
     if (existingUser) {
       return res.status(400).json({ message: "Email already exists." });
     }
@@ -159,7 +162,10 @@ exports.loginUser = async (req, res) => {
     }
 
     // Fetch user with restaurant info if exists
-    const user = await User.findOne({ email })
+    const user = await User.findOne({
+      email,
+      isDeleted: false,
+    })
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
