@@ -1,145 +1,229 @@
 const mongoose = require("mongoose");
 
-const orderSchema = new mongoose.Schema({
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
+const orderSchema = new mongoose.Schema(
+  {
+    // USER INFO
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
 
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    default: null,
-  },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
 
-  createdByRole: {
-    type: String,
-    enum: ["admin", "staff", "user"],
-    default: "user",
-  },
+    createdByRole: {
+      type: String,
+      enum: ["admin", "staff", "user"],
+      default: "user",
+    },
 
-  fingerPrint: {
-    type: String,
-    required: false,
-    index: true,
-  },
+    fingerPrint: {
+      type: String,
+      index: true,
+    },
 
-  customerName: {
-    type: String,
-    required: true,
-  },
+    customerName: {
+      type: String,
+      required: true,
+    },
 
-  customerPhone: {
-    type: String,
-    required: true,
-  },
+    customerPhone: {
+      type: String,
+      required: true,
+    },
 
-  address: {
-    type: String,
-  },
+    address: String,
 
-  tableId: {
-    type: String,
-  },
-
-  items: [
-    {
-      menuItemId: {
+    // SOURCE (TABLE / ROOM) 
+    source: {
+      restaurantId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: "MenuItem",
+        ref: "Restaurant",
         required: true,
       },
 
-      name: {
+      sectionName: String,
+
+      unitId: {
+        type: mongoose.Schema.Types.ObjectId,
+        default: null,
+      },
+
+      unitName: String,
+
+      type: {
         type: String,
-        required: true,
+        enum: ["TABLE", "ROOM", "NONE"],
+        default: "NONE",
       },
+    },
 
-      variant: {
-        type: String,
-      },
-
-      quantity: {
-        type: Number,
-        required: true,
-      },
-
-      price: {
-        type: Number,
-        required: true,
-      },
-
-      discountedPrice: {
-        type: Number,
-        required: true,
-      },
-
-      discountApplied: {
-        type: {
-          type: String,
-          enum: ["percentage", "flat"],
-          default: null,
+    //  ROOM STAY (ONLY FOR ROOMS)
+    stay: {
+      type: {
+        enabled: {
+          type: Boolean,
+          default: false,
         },
-        value: {
+
+        checkInTime: Date,
+        checkOutTime: Date,
+
+        category: {
+          name: String,
+        },
+
+        pricing: {
+          model: {
+            type: String,
+            enum: ["PER_NIGHT"],
+          },
+          rate: Number,
+        },
+
+        duration: {
+          nights: Number,
+        },
+
+        roomCharge: {
           type: Number,
           default: 0,
         },
       },
-
-      customizations: {
-        type: String,
-        default: "",
-      },
-
-      isReady: {
-        type: Boolean,
-        default: false,
-      },
+      default: undefined,
     },
-  ],
 
-  status: {
-    type: String,
-    enum: ["pending", "preparing", "ready", "completed", "cancelled"],
-    default: "pending",
-  },
+    // FOOD ITEMS
+    items: [
+      {
+        menuItemId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "MenuItem",
+          required: true,
+        },
 
-  orderType: {
-    type: String,
-    enum: ["Eat Here", "Take Away", "Delivery"],
-    required: true,
-  },
+        name: {
+          type: String,
+          required: true,
+        },
 
-  subtotal: {
-    type: Number,
-    required: true,
-  },
+        variant: String,
 
-  deliveryCharges: {
-    type: Number,
-    default: 0,
-  },
+        quantity: {
+          type: Number,
+          required: true,
+        },
 
-  gstRate: {
-    type: Number,
-    required: true,
-  },
+        price: {
+          type: Number,
+          required: true,
+        },
 
-  gstAmount: {
-    type: Number,
-    required: true,
-  },
+        discountedPrice: {
+          type: Number,
+          required: true,
+        },
 
-  totalAmount: {
-    type: Number,
-    required: true,
-  },
+        discountApplied: {
+          type: {
+            type: String,
+            enum: ["percentage", "flat"],
+            default: null,
+          },
+          value: {
+            type: Number,
+            default: 0,
+          },
+        },
 
-  createdAt: {
-    type: Date,
-    default: Date.now,
+        customizations: {
+          type: String,
+          default: "",
+        },
+
+        isReady: {
+          type: Boolean,
+          default: false,
+        },
+      },
+    ],
+
+    // ORDER STATUS
+    status: {
+      type: String,
+      enum: ["pending", "preparing", "ready", "completed", "cancelled"],
+      default: "pending",
+    },
+
+    orderType: {
+      type: String,
+      enum: ["Eat Here", "Take Away", "Delivery", "Room Stay"],
+      required: true,
+    },
+
+    // BILLING
+    subtotal: {
+      type: Number,
+      required: true,
+    },
+
+    deliveryCharges: {
+      type: Number,
+      default: 0,
+    },
+
+    gstRate: {
+      type: Number,
+      required: true,
+    },
+
+    gstAmount: {
+      type: Number,
+      required: true,
+    },
+
+    totalAmount: {
+      type: Number,
+      required: true,
+    },
+
+    settlementAmount: {
+      type: Number,
+      default: null,
+    },
+
+    paymentMethods: {
+      type: [
+        {
+          method: {
+            type: String,
+            enum: ["CASH", "UPI", "CARD"],
+            required: true,
+          },
+          amount: {
+            type: Number,
+            required: true,
+            min: 0,
+          },
+        },
+      ],
+      default: [],
+    },
+    completedAt: Date,
+    deleted: {
+      type: Boolean,
+      default: false,
+    },
   },
-});
+  { timestamps: true }
+);
+
+// INDEXES (IMPORTANT)
+orderSchema.index({ "source.unitId": 1, status: 1 });
+orderSchema.index({ fingerPrint: 1, "source.unitId": 1 });
 
 module.exports = mongoose.model("Order", orderSchema);

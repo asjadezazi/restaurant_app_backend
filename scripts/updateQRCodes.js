@@ -2,175 +2,278 @@ const mongoose = require("mongoose");
 const path = require("path");
 require("dotenv").config();
 
-const User = require("../models/User");
 const Restaurant = require("../models/Restaurant");
 const generateAndUploadQR = require("../utils/generateQR");
 
 const MONGO_URI = process.env.MONGO_URL;
 
-const migrateQR = async () => {
+const migrateOldSections = async () => {
   try {
     await mongoose.connect(MONGO_URI);
+
     console.log("✅ Connected to DB");
-
-
-    // -----------------------------
-    // 1) Patch legacy admins once
-    // -----------------------------
-
-    const patch1 = await User.updateMany(
-      {
-        role: "admin",
-        isDeleted: { $exists: false }
-      },
-      {
-        $set: { isDeleted: false }
-      }
-    );
-
-    const patch2 = await User.updateMany(
-      {
-        role: "admin",
-        deletedBy: { $exists: false }
-      },
-      {
-        $set: { deletedBy: null }
-      }
-    );
-
-    console.log(
-      "🛠 Patched admins:",
-      patch1.modifiedCount,
-      "isDeleted fields,",
-      patch2.modifiedCount,
-      "deletedBy fields"
-    );
-
-
-    // -----------------------------
-    // 2) Fetch active admins
-    // -----------------------------
-
-    const users = await User.find({
-      role: "admin",
-      isDeleted: false
-    });
-
-    console.log(
-      "🧠 Users Found:",
-      users.map(u => u.email)
-    );
 
     const logoPath = path.join(
       __dirname,
       "../assets/logo.jpeg"
     );
 
+    const restaurants = await Restaurant.find({});
 
-    // -----------------------------
-    // 3) Migrate each admin QR
-    // -----------------------------
+    console.log(
+      `🍽 Found ${restaurants.length} restaurants`
+    );
 
-    for (const user of users) {
+    for (const restaurant of restaurants) {
       try {
+        console.log(
+          `\n🔄 Processing ${restaurant.restaurantName}`
+        );
 
-        console.log(`🔄 Processing ${user.email}`);
-
-        if (!user.restaurantId || !user.domain) {
-
-          console.log("⏭ Missing data, removing user qr only");
-
-          await User.updateOne(
-            { _id: user._id },
-            {
-              $unset: { qrCode: 1 }
-            }
+        // already migrated
+        if (Array.isArray(restaurant.sections)) {
+          console.log(
+            "⏭ Already using new sections schema"
           );
-
           continue;
         }
 
-        const restaurant = await Restaurant.findById(
-          user.restaurantId
-        );
+        const oldSections = restaurant.sections || {};
 
-        if (!restaurant) {
+        const newSections = [];
 
-          console.log("⏭ Restaurant missing, removing user qr only");
+        // =====================================
+        // Indoor Tables
+        // =====================================
 
-          await User.updateOne(
-            { _id: user._id },
-            {
-              $unset: { qrCode: 1 }
-            }
-          );
+        if (oldSections.indoor?.tables > 0) {
+          const units = [];
 
-          continue;
+          for (
+            let i = 1;
+            i <= oldSections.indoor.tables;
+            i++
+          ) {
+            const unitId =
+              new mongoose.Types.ObjectId();
+
+            const qr =
+              await generateAndUploadQR(
+                `${restaurant.domain}/order?unitId=${unitId}`,
+                logoPath,
+                `T${i}`,
+                "TABLE"
+              );
+
+            units.push({
+              _id: unitId,
+              type: "TABLE",
+              name: `T${i}`,
+              status: "AVAILABLE",
+              currentOrderId: null,
+
+              occupancy: {
+                checkInTime: null,
+                checkOutTime: null,
+              },
+
+              qrCode: {
+                url: qr.url,
+                code: qr.public_id,
+              },
+
+              isActive: true,
+            });
+          }
+
+          newSections.push({
+            name: "Indoor",
+            units,
+          });
         }
 
+        // =====================================
+        // Outdoor Tables
+        // =====================================
 
-        // Generate fresh QR
-        const qrData = await generateAndUploadQR(
-          user.domain,
-          logoPath
-        );
+        if (oldSections.outdoor?.tables > 0) {
+          const units = [];
 
+          for (
+            let i = 1;
+            i <= oldSections.outdoor.tables;
+            i++
+          ) {
+            const unitId =
+              new mongoose.Types.ObjectId();
 
-        // Save in Restaurant only
-        restaurant.qrCode = {
-          url: qrData.url,
-          public_id: qrData.public_id
-        };
+            const qr =
+              await generateAndUploadQR(
+                `${restaurant.domain}/order?unitId=${unitId}`,
+                logoPath,
+                `T${i}`,
+                "TABLE"
+              );
+
+            units.push({
+              _id: unitId,
+              type: "TABLE",
+              name: `T${i}`,
+              status: "AVAILABLE",
+              currentOrderId: null,
+
+              occupancy: {
+                checkInTime: null,
+                checkOutTime: null,
+              },
+
+              qrCode: {
+                url: qr.url,
+                code: qr.public_id,
+              },
+
+              isActive: true,
+            });
+          }
+
+          newSections.push({
+            name: "Outdoor",
+            units,
+          });
+        }
+
+        // =====================================
+        // Rooftop Tables
+        // =====================================
+
+        if (oldSections.rooftop?.tables > 0) {
+          const units = [];
+
+          for (
+            let i = 1;
+            i <= oldSections.rooftop.tables;
+            i++
+          ) {
+            const unitId =
+              new mongoose.Types.ObjectId();
+
+            const qr =
+              await generateAndUploadQR(
+                `${restaurant.domain}/order?unitId=${unitId}`,
+                logoPath,
+                `T${i}`,
+                "TABLE"
+              );
+
+            units.push({
+              _id: unitId,
+              type: "TABLE",
+              name: `T${i}`,
+              status: "AVAILABLE",
+              currentOrderId: null,
+
+              occupancy: {
+                checkInTime: null,
+                checkOutTime: null,
+              },
+
+              qrCode: {
+                url: qr.url,
+                code: qr.public_id,
+              },
+
+              isActive: true,
+            });
+          }
+
+          newSections.push({
+            name: "Rooftop",
+            units,
+          });
+        }
+
+        // =====================================
+        // Rooms
+        // =====================================
+
+        if (oldSections.rooms?.rooms > 0) {
+          const units = [];
+
+          for (
+            let i = 1;
+            i <= oldSections.rooms.rooms;
+            i++
+          ) {
+            const unitId =
+              new mongoose.Types.ObjectId();
+
+            const roomNumber = `${100 + i}`;
+
+            const qr =
+              await generateAndUploadQR(
+                `${restaurant.domain}/order?unitId=${unitId}`,
+                logoPath,
+                roomNumber,
+                "ROOM"
+              );
+
+            units.push({
+              _id: unitId,
+              type: "ROOM",
+              name: roomNumber,
+              status: "AVAILABLE",
+              currentOrderId: null,
+
+              occupancy: {
+                checkInTime: null,
+                checkOutTime: null,
+              },
+
+              roomCategory: null,
+
+              qrCode: {
+                url: qr.url,
+                code: qr.public_id,
+              },
+
+              isActive: true,
+            });
+          }
+
+          newSections.push({
+            name: "Rooms",
+            units,
+          });
+        }
+
+        restaurant.sections = newSections;
 
         await restaurant.save();
 
-
-        // Remove old user qr
-        await User.updateOne(
-          { _id: user._id },
-          {
-            $unset: { qrCode: 1 }
-          }
-        );
-
         console.log(
-          `✅ Migrated & cleaned ${user.email}`
+          `✅ Migrated ${restaurant.restaurantName}`
         );
-
       } catch (err) {
-
         console.error(
-          `❌ Failed for ${user.email}:`,
+          `❌ Failed restaurant ${restaurant.restaurantName}`,
           err.message
         );
       }
     }
 
-
-    // -----------------------------
-    // 4) Force cleanup leftovers
-    // -----------------------------
-
-    const cleanup = await User.updateMany(
-      { qrCode: { $exists: true } },
-      {
-        $unset: { qrCode: 1 }
-      }
-    );
-
     console.log(
-      "🧹 Leftover QR removed from",
-      cleanup.modifiedCount,
-      "users"
+      "\n🎉 Old sections migration completed"
     );
 
-    console.log("🎉 Migration completed");
-    process.exit();
-
+    process.exit(0);
   } catch (err) {
-    console.error("❌ Script error:", err);
+    console.error(
+      "❌ Migration error:",
+      err
+    );
+
     process.exit(1);
   }
 };
 
-migrateQR();
+migrateOldSections();

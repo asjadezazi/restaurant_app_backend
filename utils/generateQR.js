@@ -1,62 +1,171 @@
 const QRCode = require("qrcode");
 const { createCanvas, loadImage } = require("canvas");
-const { uploadToCloudinary } = require("../utils/cloudinary"); // adjust path
+const { uploadToCloudinary } = require("../utils/cloudinary");
 
-const generateAndUploadQR = async (domain, logoPath) => {
-  if (!domain) throw new Error("Domain is required");
+const generateAndUploadQR = async (
+  domain,
+  logoPath,
+  unitName = null,
+  unitType = null
+) => {
+  if (!domain) {
+    throw new Error("Domain is required");
+  }
 
-  const size = 1000;
+  const qrSize = 1000;
+  const labelHeight = unitName ? 120 : 0;
 
-  const canvas = createCanvas(size, size);
+  // Final canvas (QR + label area)
+  const canvas = createCanvas(
+    qrSize,
+    qrSize + labelHeight
+  );
+
   const ctx = canvas.getContext("2d");
 
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
-  // Generate QR
-  await QRCode.toCanvas(canvas, `https://${domain}`, {
-    errorCorrectionLevel: "H",
-    width: size,
-  });
-
-  const logo = await loadImage(logoPath);
-
-  // Maintain aspect ratio
-  const aspectRatio = logo.width / logo.height;
-  const maxLogoSize = size * 0.2;
-
-  let drawWidth, drawHeight;
-
-  if (logo.width > logo.height) {
-    drawWidth = maxLogoSize;
-    drawHeight = maxLogoSize / aspectRatio;
-  } else {
-    drawHeight = maxLogoSize;
-    drawWidth = maxLogoSize * aspectRatio;
-  }
-  
-  // Center position
-  const x = (size - drawWidth) / 2;
-  const y = (size - drawHeight) / 2;
-
-  //Circular white background
-  const padding = 20;
-  const radius = Math.max(drawWidth, drawHeight) / 2 + padding;
-  const centerX = size / 2;
-  const centerY = size / 2;
+  // White background
   ctx.fillStyle = "#ffffff";
-  ctx.beginPath();
-  ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.fillRect(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
 
-  // Draw logo (no distortion)
-  ctx.drawImage(logo, x, y, drawWidth, drawHeight);
+  // Generate QR on separate canvas
+  const qrCanvas = createCanvas(
+    qrSize,
+    qrSize
+  );
 
-  //Convert canvas → buffer
-  const buffer = canvas.toBuffer("image/png");
+  await QRCode.toCanvas(
+    qrCanvas,
+    domain.startsWith("http")
+      ? domain
+      : `https://${domain}`,
+    {
+      errorCorrectionLevel: "H",
+      width: qrSize,
+      margin: 2,
+      color: {
+        dark: "#000000",
+        light: "#FFFFFF",
+      },
+    }
+  );
 
-  //Upload to cloudinary
-  const uploadResult = await uploadToCloudinary(buffer);
+  // Draw QR into top section
+  ctx.drawImage(
+    qrCanvas,
+    0,
+    0
+  );
+
+  // Draw Logo
+  if (logoPath) {
+    const logo = await loadImage(logoPath);
+
+    const aspectRatio =
+      logo.width / logo.height;
+
+    const maxLogoSize = qrSize * 0.2;
+
+    let drawWidth;
+    let drawHeight;
+
+    if (logo.width > logo.height) {
+      drawWidth = maxLogoSize;
+      drawHeight =
+        maxLogoSize / aspectRatio;
+    } else {
+      drawHeight = maxLogoSize;
+      drawWidth =
+        maxLogoSize * aspectRatio;
+    }
+
+    const x =
+      (qrSize - drawWidth) / 2;
+
+    const y =
+      (qrSize - drawHeight) / 2;
+
+    const padding = 20;
+
+    const radius =
+      Math.max(drawWidth, drawHeight) / 2 +
+      padding;
+
+    const centerX = qrSize / 2;
+    const centerY = qrSize / 2;
+
+    // White circular background
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(
+      centerX,
+      centerY,
+      radius,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+
+    // Draw logo
+    ctx.drawImage(
+      logo,
+      x,
+      y,
+      drawWidth,
+      drawHeight
+    );
+  }
+
+  // Draw Unit Name / Type
+  if (unitName) {
+    // Label background
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      qrSize,
+      qrSize,
+      labelHeight
+    );
+
+    // Separator line
+    ctx.strokeStyle = "#cccccc";
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(0, qrSize);
+    ctx.lineTo(qrSize, qrSize);
+    ctx.stroke();
+
+    // Text
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 72px Arial";
+
+    const label = unitType
+      ? `${unitType} - ${unitName}`
+      : unitName;
+
+    ctx.fillText(
+      label,
+      qrSize / 2,
+      qrSize + labelHeight / 2
+    );
+  }
+
+  const buffer = canvas.toBuffer(
+    "image/png"
+  );
+
+  const uploadResult =
+    await uploadToCloudinary(buffer);
 
   return {
     url: uploadResult.secure_url,

@@ -10,7 +10,7 @@ exports.createOrderService = async ({
   customerName,
   customerPhone,
   items,
-  tableId,
+  source, // ✅ NEW
   orderType,
   address,
   createdBy,
@@ -24,7 +24,7 @@ exports.createOrderService = async ({
     throw new Error("Order must contain at least one item.");
   }
 
-  // 1 Fetch menu items (same as yours)
+  // 1 Fetch menu items
   const menuItems = await MenuItem.find({
     _id: { $in: items.map((i) => i.menuItemId) },
     deleted: false,
@@ -34,7 +34,7 @@ exports.createOrderService = async ({
   let subtotal = 0;
   const orderItems = [];
 
-  // 2 SAME LOOP (unchanged)
+  // 2 SAME LOOP
   for (const item of items) {
     const menuItem = await MenuItem.findOne({
       _id: item.menuItemId,
@@ -89,7 +89,7 @@ exports.createOrderService = async ({
     });
   }
 
-  // 3 SAME GST LOGIC
+  // 3 GST LOGIC
   const restaurant = await Restaurant.findOne({
     user: tenantAdminId,
     deleted: false,
@@ -102,17 +102,30 @@ exports.createOrderService = async ({
   const gstAmount = (Number(subtotal) * (gstRate || 0)) / 100;
   const totalAmount = Number(subtotal) + Number(gstAmount) + deliveryCharges;
 
-  const finalTableId = orderType === "Eat Here" ? tableId : null;
   const finalAddress = orderType === "Delivery" ? address : null;
 
-  // ✅ ONLY ADDITION (non-breaking fields)
+  // ✅ NEW SOURCE HANDLING
+  const finalSource =
+    orderType === "Eat Here"
+      ? {
+          section: source?.section || null,
+          number: source?.number || null,
+          type: source?.type || "NONE",
+        }
+      : {
+          section: null,
+          number: null,
+          type: "NONE",
+        };
+
+  // ✅ CREATE ORDER
   const order = await Order.create({
-    user: tenantAdminId, // unchanged
+    user: tenantAdminId,
 
     createdBy: createdBy || null,
     createdByRole,
 
-    fingerPrint, // still used for user tracking
+    fingerPrint,
     customerName,
     customerPhone,
     items: orderItems,
@@ -121,7 +134,10 @@ exports.createOrderService = async ({
     gstAmount,
     deliveryCharges,
     totalAmount,
-    tableId: finalTableId,
+
+    // ✅ REPLACED tableId
+    source: finalSource,
+
     orderType,
     address: finalAddress,
   });

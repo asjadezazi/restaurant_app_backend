@@ -5,9 +5,9 @@
     let adminId = null;
 
     if (req.user?.role === "admin") {
-      adminId = req.user._id; // ✅ admin uses own id
+      adminId = req.user._id; // admin uses own id
     } else if (req.user?.role === "staff") {
-      adminId = req.user.createdBy; // ✅ staff uses createdBy
+      adminId = req.user.createdBy; // staff uses createdBy
     }
 
     const newClient = {
@@ -45,16 +45,16 @@
         data.fingerPrint &&
         client.fingerPrint === data.fingerPrint;
 
-      // 🔥 ADMIN + STAFF
+      // ADMIN + STAFF
       if (
-        (type === "NEW_ORDER" || type === "ORDER_UPDATED") &&
+        (type === "NEW_ORDER" || type === "ORDER_UPDATED" || type === "OCCUPANCY_CHANGED") &&
         isAdminOrStaff &&
         sameRestaurant
       ) {
         client.res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
       }
 
-      // 🔥 GUEST (only for updates)
+      // GUEST (only for updates)
       if (
         type === "ORDER_UPDATED" &&
         isSameGuest

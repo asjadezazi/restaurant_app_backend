@@ -17,6 +17,7 @@ exports.getMenuByTenant = async (req, res) => {
     const menuItems = await MenuItem.find({
       user: tenantAdminId,
       deleted: false,
+      visibility: "PUBLIC",
     }).sort({ displayOrder: 1 });
 
     res.status(200).json({
@@ -74,6 +75,7 @@ exports.addMenuItems = async (req, res) => {
       type,
       category,
       available,
+      visibility,
       discount, // for single items
       comboPrice, // for combo items
       comboItems, // array of items in combo [{menuItemId, variant?, quantity}]
@@ -89,6 +91,15 @@ exports.addMenuItems = async (req, res) => {
       return res.status(400).json({ error: "Invalid pricing type" });
     }
 
+    if (
+      visibility &&
+      !["PUBLIC", "ADMIN"].includes(visibility)
+    ) {
+      return res.status(400).json({
+        error: "Invalid visibility",
+      });
+    }
+
     const itemData = {
       name,
       description,
@@ -96,6 +107,7 @@ exports.addMenuItems = async (req, res) => {
       type,
       category,
       available,
+      visibility: visibility || "PUBLIC",
       image,
       user: req.user._id,
     };
@@ -208,8 +220,17 @@ exports.updateMenuItem = async (req, res) => {
     const update = {};
     const unset = {};
 
+    if (
+      body.visibility !== undefined &&
+      !["PUBLIC", "ADMIN"].includes(body.visibility)
+    ) {
+      return res.status(400).json({
+        error: "Invalid visibility",
+      });
+    }
+
     // ---------- BASIC FIELDS ----------
-    ["name", "description", "type", "category", "available"].forEach((f) => {
+    ["name", "description", "type", "category", "available", "visibility"].forEach((f) => {
       if (body[f] !== undefined) update[f] = body[f];
     });
 

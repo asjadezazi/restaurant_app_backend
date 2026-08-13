@@ -1,18 +1,31 @@
 // utils/calculateDiscountedPrice.js
-const calculateDiscountedPrice = (price, discount) => {
-  if (!discount || !discount.type || !discount.value) {
-    return price;
-  }
+ const calculateDiscountedPrice = (price, discount = {}) => {
+      const numericPrice = Number(price || 0);
 
-  if (discount.type === "percentage") {
-    return Math.max(price - (price * discount.value) / 100, 0);
-  }
+      if (!discount || !discount.type) {
+        return numericPrice;
+      }
 
-  if (discount.type === "flat") {
-    return Math.max(price - discount.value, 0);
-  }
+      const discountValue = Number(discount.value || 0);
 
-  return price;
-};
+      let finalPrice = numericPrice;
+
+      if (discount.type === "percentage") {
+        finalPrice =
+          numericPrice - (numericPrice * discountValue) / 100;
+      }
+
+      if (discount.type === "flat") {
+        finalPrice = numericPrice - discountValue;
+      }
+
+      return Math.max(0, Number(finalPrice.toFixed(2)));
+    };
+
+    const makeItemKey = (item) => {
+      return `${item.menuItemId}_${item.variant || "default"}_${
+        item.customizations || ""
+      }`;
+    };
 
 module.exports = calculateDiscountedPrice;

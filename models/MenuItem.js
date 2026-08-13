@@ -65,7 +65,7 @@ const menuItemSchema = new mongoose.Schema(
       required: false,
     },
     category: String,
-    available: {  
+    available: {
       type: Boolean,
       default: true,
     },
@@ -77,6 +77,11 @@ const menuItemSchema = new mongoose.Schema(
     displayOrder: {
       type: Number,
       default: 100,
+    },
+    visibility: {
+      type: String,
+      enum: ["PUBLIC", "ADMIN"],
+      default: "PUBLIC",
     },
     deleted: { type: Boolean, default: false },
   },
