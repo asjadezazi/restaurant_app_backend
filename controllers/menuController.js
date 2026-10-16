@@ -11,21 +11,32 @@ const mongoose = require("mongoose");
 exports.getMenuByTenant = async (req, res) => {
   try {
     const { tenantAdminId, tenantRestaurantName } = req;
-    if (!tenantAdminId)
-      return res.status(404).json({ message: "Tenant not found" });
 
-    const menuItems = await MenuItem.find({
+    if (!tenantAdminId) {
+      return res.status(404).json({ message: "Tenant not found" });
+    }
+
+    const filter = {
       user: tenantAdminId,
       deleted: false,
       visibility: "PUBLIC",
-    }).sort({ displayOrder: 1 });
+    };
 
-    res.status(200).json({
+    const [menuItems, count] = await Promise.all([
+      MenuItem.find(filter).sort({ displayOrder: 1 }),
+      MenuItem.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      count,
       message: `Menu Items from restaurant: ${tenantRestaurantName}`,
       menu: menuItems,
     });
   } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
+    return res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 
@@ -78,7 +89,7 @@ exports.addMenuItems = async (req, res) => {
       visibility,
       discount, // for single items
       comboPrice, // for combo items
-      comboItems, // array of items in combo [{menuItemId, variant?, quantity}]
+      comboItems, // array of items in combo
     } = req.body;
 
     let image = null;

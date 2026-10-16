@@ -3,74 +3,143 @@ const Order = require("../models/Order");
 // Get Revenue Details
 exports.getRestaurantInsights = async (req, res) => {
   try {
-    const user = req.user; // from JWT auth
+    const user = req.user;
     const { from, to, range } = req.query;
 
     const now = new Date();
 
     const parseDate = (input, isEndOfDay = false) => {
       if (!input) return null;
+
       const date = new Date(input);
+
       if (isNaN(date)) return null;
-      if (isEndOfDay) date.setUTCHours(23, 59, 59, 999);
-      else date.setUTCHours(0, 0, 0, 0);
+
+      if (isEndOfDay) {
+        date.setUTCHours(23, 59, 59, 999);
+      } else {
+        date.setUTCHours(0, 0, 0, 0);
+      }
+
       return date;
     };
 
     let fromDate, toDate;
+
     toDate = parseDate(to, true) || now;
 
     if (from) {
       fromDate = parseDate(from);
     } else {
       switch (range) {
-        case "1d": fromDate = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000); break;
-        case "7d": fromDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-        case "15d": fromDate = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000); break;
-        case "30d": fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
+        case "1d":
+          fromDate = new Date(
+            now.getTime() - 1 * 24 * 60 * 60 * 1000
+          );
+          break;
+
+        case "7d":
+          fromDate = new Date(
+            now.getTime() - 7 * 24 * 60 * 60 * 1000
+          );
+          break;
+
+        case "15d":
+          fromDate = new Date(
+            now.getTime() - 15 * 24 * 60 * 60 * 1000
+          );
+          break;
+
+        case "30d":
+          fromDate = new Date(
+            now.getTime() - 30 * 24 * 60 * 60 * 1000
+          );
+          break;
+
         case "6m": {
           const sixMonthsAgo = new Date(now);
-          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+          sixMonthsAgo.setMonth(
+            sixMonthsAgo.getMonth() - 6
+          );
           fromDate = sixMonthsAgo;
           break;
         }
+
         case "1y": {
           const oneYearAgo = new Date(now);
-          oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+          oneYearAgo.setFullYear(
+            oneYearAgo.getFullYear() - 1
+          );
           fromDate = oneYearAgo;
           break;
         }
-        default: fromDate = new Date(0); // all time
+
+        default:
+          fromDate = new Date(0);
       }
     }
 
-    //  AGGREGATION PIPELINE
+    // AGGREGATION PIPELINE
     const insights = await Order.aggregate([
       {
         $match: {
           user: user._id,
           status: "completed",
-          createdAt: { $gte: fromDate, $lte: toDate },
+          deleted: false,
+          completedAt: {
+            $gte: fromDate,
+            $lte: toDate,
+          },
         },
       },
+
       {
         $addFields: {
           revenue: {
             $cond: [
-              { $ifNull: ["$totalAmount", false] },
-              "$totalAmount",
+              {
+                $ne: [
+                  { $ifNull: ["$settlementAmount", null] },
+                  null,
+                ],
+              },
+              "$settlementAmount",
+
               {
                 $cond: [
-                  { $ifNull: ["$totalPrice", false] },
-                  "$totalPrice",
                   {
-                    $sum: {
-                      $map: {
-                        input: "$items",
-                        as: "i",
-                        in: { $multiply: ["$$i.price", "$$i.quantity"] },
+                    $ne: [
+                      { $ifNull: ["$totalAmount", null] },
+                      null,
+                    ],
+                  },
+                  "$totalAmount",
+
+                  {
+                    $cond: [
+                      {
+                        $ne: [
+                          { $ifNull: ["$totalPrice", null] },
+                          null,
+                        ],
                       },
-                    },
+                      "$totalPrice",
+
+                      {
+                        $sum: {
+                          $map: {
+                            input: { $ifNull: ["$items", []] },
+                            as: "i",
+                            in: {
+                              $multiply: [
+                                { $ifNull: ["$$i.price", 0] },
+                                { $ifNull: ["$$i.quantity", 0] },
+                              ],
+                            },
+                          },
+                        },
+                      },
+                    ],
                   },
                 ],
               },
@@ -78,15 +147,22 @@ exports.getRestaurantInsights = async (req, res) => {
           },
         },
       },
-      { $sort: { createdAt: 1 } },
+
+      {
+        $sort: {
+          completedAt: 1,
+        },
+      },
+
       {
         $project: {
           _id: 0,
           revenue: 1,
-          createdAt: 1,
+          completedAt: 1,
+
           formattedDate: {
             $dateToString: {
-              date: "$createdAt",
+              date: "$completedAt",
               format: "%Y-%m-%d %H:%M",
               timezone: "UTC",
             },
@@ -96,7 +172,11 @@ exports.getRestaurantInsights = async (req, res) => {
     ]);
 
     const totalOrders = insights.length;
-    const totalRevenue = insights.reduce((a, b) => a + b.revenue, 0);
+
+    const totalRevenue = insights.reduce(
+      (a, b) => a + Number(b.revenue || 0),
+      0
+    );
 
     const chartData = insights.map((i) => ({
       date: i.formattedDate,
@@ -112,7 +192,11 @@ exports.getRestaurantInsights = async (req, res) => {
     });
   } catch (err) {
     console.error("Restaurant insights error:", err);
-    res.status(500).json({ message: "Server error", error: err.message });
+
+    res.status(500).json({
+      message: "Server error",
+      error: err.message,
+    });
   }
 };
 

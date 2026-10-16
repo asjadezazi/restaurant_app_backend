@@ -28,12 +28,12 @@ const orderSchema = new mongoose.Schema(
 
     customerName: {
       type: String,
-      required: true,
+      default: "N/A"
     },
 
     customerPhone: {
       type: String,
-      required: true,
+      default: "N/A"
     },
 
     address: String,
@@ -194,6 +194,28 @@ const orderSchema = new mongoose.Schema(
     settlementAmount: {
       type: Number,
       default: null,
+    },
+
+    advancePayments: {
+      type: [
+        {
+          amount: {
+            type: Number,
+            required: true,
+            min: 0,
+          },
+          paymentMethod: {
+            type: String,
+            enum: ["CASH", "UPI", "CARD"],
+            required: true,
+          },
+          paidAt: {
+            type: Date,
+            default: Date.now,
+          },
+        },
+      ],
+      default: [],
     },
 
     paymentMethods: {

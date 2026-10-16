@@ -20,6 +20,7 @@ const start = async () => {
 
     require("./listeners/orderListener");
     require("./listeners/occupancyListener");
+    require("./listeners/restaurantListeners.js")
 
     app.listen(port, () => {
       console.log(`Server running → http://localhost:${port}`);

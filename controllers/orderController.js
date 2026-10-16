@@ -1580,9 +1580,29 @@ exports.billOrder = async (req, res) => {
     }
 
     // FINAL BILL
-    const totalAmount = foodSubtotal + gst + delivery + roomCharge;
+    const totalAmount =
+      foodSubtotal +
+      gst +
+      delivery +
+      roomCharge;
 
     order.totalAmount = totalAmount;
+
+    const advancePaid = (order.advancePayments || []).reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    );
+
+    const settlementAmount =
+      order.settlementAmount != null
+        ? Number(order.settlementAmount)
+        : totalAmount;
+
+    const remainingAmount = Math.max(
+      0,
+      settlementAmount - advancePaid
+    );
+
     order.status = "completed";
     order.completedAt = new Date();
 
@@ -1638,6 +1658,9 @@ exports.billOrder = async (req, res) => {
         deliveryCharges: delivery,
         roomCharge,
         totalAmount,
+        advancePaid,
+        settlementAmount,
+        remainingAmount,
         completedAt: order.completedAt,
       },
     });
@@ -1905,23 +1928,42 @@ exports.payOrder = async (req, res) => {
       order.settlementAmount = amt;
     }
 
-    // TOTAL PAID MUST MATCH PAYABLE AMOUNT
-    const expectedAmount =
-      order.settlementAmount != null
-        ? order.settlementAmount
-        : order.totalAmount;
+    // TOTAL ADVANCE PAID
+    const advancePaid = (order.advancePayments || []).reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    );
 
-    if (paidAmount !== expectedAmount) {
+    // FINAL BILL
+    const finalAmount =
+      order.settlementAmount != null
+        ? Number(order.settlementAmount)
+        : Number(order.totalAmount);
+
+    // REMAINING AMOUNT AFTER ADVANCE
+    const remainingAmount = Math.max(
+      0,
+      finalAmount - advancePaid
+    );
+
+    // FINAL PAYMENT MUST MATCH REMAINING AMOUNT
+    if (paidAmount !== remainingAmount) {
       return res.status(400).json({
-        message: `Total payment amount must equal ₹${expectedAmount}`,
+        message: `Total payment amount must equal ₹${remainingAmount}`,
+        finalAmount,
+        advancePaid,
+        remainingAmount,
       });
     }
 
-    // SAVE PAYMENT
+    // SAVE FINAL PAYMENT
     order.paymentMethods = paymentMethods;
 
     // HANDLE UNIT (ONLY TABLE / ROOM)
-    if (order.source.type === "TABLE" || order.source.type === "ROOM") {
+    if (
+      order.source.type === "TABLE" ||
+      order.source.type === "ROOM"
+    ) {
       const restaurant = await Restaurant.findOne({
         user: order.user,
         deleted: false,
@@ -1938,6 +1980,7 @@ exports.payOrder = async (req, res) => {
 
       for (const section of restaurant.sections) {
         const unit = section.units.id(order.source.unitId);
+
         if (unit) {
           resolvedUnit = unit;
           resolvedSection = section;
@@ -1955,6 +1998,7 @@ exports.payOrder = async (req, res) => {
       // FREE UNIT
       resolvedUnit.status = "AVAILABLE";
       resolvedUnit.currentOrderId = null;
+
       resolvedUnit.occupancy = {
         checkInTime: null,
         checkOutTime: null,
@@ -1964,12 +2008,15 @@ exports.payOrder = async (req, res) => {
 
       occupancyEmitter.emit("occupancyChanged", {
         user: restaurant.user,
+
         action:
           order.source.type === "ROOM"
             ? "ROOM_RELEASED"
             : "TABLE_RELEASED",
+
         unitId: resolvedUnit._id,
         orderId: order._id,
+
         sectionName: resolvedSection.name,
         unitName: resolvedUnit.name,
       });
@@ -1977,15 +2024,305 @@ exports.payOrder = async (req, res) => {
 
     await order.save();
 
-    orderEmitter.emit("orderUpdated", order.toObject());
+    orderEmitter.emit(
+      "orderUpdated",
+      order.toObject()
+    );
 
     return res.status(200).json({
       message: "Payment successful",
       order,
+
+      paymentSummary: {
+        totalAmount: order.totalAmount,
+        settlementAmount: finalAmount,
+        advancePaid,
+        finalPayment: paidAmount,
+        remainingAmount: 0,
+      },
     });
 
   } catch (error) {
     console.error("Payment error:", error);
+
+    return res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+exports.addAdvancePayment = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { amount, paymentMethod } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({
+        message: "orderId is required",
+      });
+    }
+
+    const advanceAmount = Number(amount);
+
+    if (isNaN(advanceAmount) || advanceAmount <= 0) {
+      return res.status(400).json({
+        message: "Advance payment amount must be greater than 0",
+      });
+    }
+
+    const ALLOWED_METHODS = ["CASH", "UPI", "CARD"];
+
+    if (!ALLOWED_METHODS.includes(paymentMethod)) {
+      return res.status(400).json({
+        message: "Invalid payment method",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found",
+      });
+    }
+
+    // Advance payment is only for room stays
+    if (order.orderType !== "Room Stay" || !order.stay?.enabled) {
+      return res.status(400).json({
+        message: "Advance payment is only available for room stays",
+      });
+    }
+
+    // Do not allow changes after final payment
+    if (order.paymentMethods?.length > 0) {
+      return res.status(400).json({
+        message: "Cannot add advance payment after final payment",
+      });
+    }
+
+    // Calculate existing advance
+    const advancePaid = (order.advancePayments || []).reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    );
+
+    // If settlement already exists, don't allow advance to exceed it
+    const finalAmount =
+      order.settlementAmount != null
+        ? Number(order.settlementAmount)
+        : Number(order.totalAmount || 0);
+
+    order.advancePayments.push({
+      amount: advanceAmount,
+      paymentMethod,
+      paidAt: new Date(),
+    });
+
+    await order.save();
+
+    orderEmitter.emit("orderUpdated", order.toObject());
+
+    const totalAdvancePaid =
+      advancePaid + advanceAmount;
+
+    const remainingAmount =
+      finalAmount > 0
+        ? Math.max(0, finalAmount - totalAdvancePaid)
+        : null;
+
+    return res.status(200).json({
+      message: "Advance payment added successfully",
+      order,
+      totalAdvancePaid,
+      remainingAmount,
+    });
+
+  } catch (error) {
+    console.error("Add advance payment error:", error);
+
+    return res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+exports.editAdvancePayment = async (req, res) => {
+  try {
+    const { orderId, paymentId } = req.params;
+    const { amount, paymentMethod } = req.body;
+
+    if (!orderId || !paymentId) {
+      return res.status(400).json({
+        message: "orderId and paymentId are required",
+      });
+    }
+
+    const advanceAmount = Number(amount);
+
+    if (isNaN(advanceAmount) || advanceAmount <= 0) {
+      return res.status(400).json({
+        message: "Advance payment amount must be greater than 0",
+      });
+    }
+
+    const ALLOWED_METHODS = ["CASH", "UPI", "CARD"];
+
+    if (!ALLOWED_METHODS.includes(paymentMethod)) {
+      return res.status(400).json({
+        message: "Invalid payment method",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found",
+      });
+    }
+
+    if (order.orderType !== "Room Stay" || !order.stay?.enabled) {
+      return res.status(400).json({
+        message: "Advance payment is only available for room stays",
+      });
+    }
+
+    // Don't allow editing after final payment
+    if (order.paymentMethods?.length > 0) {
+      return res.status(400).json({
+        message: "Cannot edit advance payment after final payment",
+      });
+    }
+
+    const payment = order.advancePayments.id(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({
+        message: "Advance payment not found",
+      });
+    }
+
+    // Calculate total advance excluding the payment being edited
+    const otherAdvancePaid = (order.advancePayments || []).reduce(
+      (sum, item) => {
+        if (item._id.toString() === paymentId) {
+          return sum;
+        }
+
+        return sum + Number(item.amount || 0);
+      },
+      0
+    );
+
+    const finalAmount =
+      order.settlementAmount != null
+        ? Number(order.settlementAmount)
+        : Number(order.totalAmount || 0);
+
+    // Update existing payment
+    payment.amount = advanceAmount;
+    payment.paymentMethod = paymentMethod;
+
+    await order.save();
+
+    orderEmitter.emit("orderUpdated", order.toObject());
+
+    const totalAdvancePaid = (order.advancePayments || []).reduce(
+      (sum, item) => sum + Number(item.amount || 0),
+      0
+    );
+
+    const remainingAmount =
+      finalAmount > 0
+        ? Math.max(0, finalAmount - totalAdvancePaid)
+        : null;
+
+    return res.status(200).json({
+      message: "Advance payment updated successfully",
+      order,
+      totalAdvancePaid,
+      remainingAmount,
+    });
+
+  } catch (error) {
+    console.error("Edit advance payment error:", error);
+
+    return res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+exports.deleteAdvancePayment = async (req, res) => {
+  try {
+    const { orderId, paymentId } = req.params;
+
+    if (!orderId || !paymentId) {
+      return res.status(400).json({
+        message: "orderId and paymentId are required",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Order not found",
+      });
+    }
+
+    if (order.orderType !== "Room Stay" || !order.stay?.enabled) {
+      return res.status(400).json({
+        message: "Advance payment is only available for room stays",
+      });
+    }
+
+    // Don't allow deletion after final payment
+    if (order.paymentMethods?.length > 0) {
+      return res.status(400).json({
+        message: "Cannot delete advance payment after final payment",
+      });
+    }
+
+    const payment = order.advancePayments.id(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({
+        message: "Advance payment not found",
+      });
+    }
+
+    payment.deleteOne();
+
+    await order.save();
+
+    orderEmitter.emit("orderUpdated", order.toObject());
+
+    const totalAdvancePaid = (order.advancePayments || []).reduce(
+      (sum, item) => sum + Number(item.amount || 0),
+      0
+    );
+
+    const finalAmount =
+      order.settlementAmount != null
+        ? Number(order.settlementAmount)
+        : Number(order.totalAmount || 0);
+
+    const remainingAmount =
+      finalAmount > 0
+        ? Math.max(0, finalAmount - totalAdvancePaid)
+        : null;
+
+    return res.status(200).json({
+      message: "Advance payment deleted successfully",
+      order,
+      totalAdvancePaid,
+      remainingAmount,
+    });
+
+  } catch (error) {
+    console.error("Delete advance payment error:", error);
+
     return res.status(500).json({
       message: error.message,
     });
@@ -2085,3 +2422,4 @@ exports.cancelRoomBooking = async (req, res) => {
     });
   }
 };
+

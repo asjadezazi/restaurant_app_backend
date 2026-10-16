@@ -41,6 +41,15 @@ router.put("/:orderId", authenticate, adminOrStaff, orderController.updateOrder)
 // Cancel room bookinh (admin / staff only)
 router.post("/:orderId/cancel-booking", authenticate, adminOrStaff, orderController.cancelRoomBooking)
 
+// Add advance payment
+router.post("/:orderId/advance-payment", authenticate, adminOrStaff, orderController.addAdvancePayment);
+
+// Edit advance payment
+router.patch("/:orderId/advance-payment/:paymentId", authenticate, adminOrStaff, orderController.editAdvancePayment);
+
+// Delete advance payment
+router.delete("/:orderId/advance-payment/:paymentId", authenticate, adminOrStaff, orderController.deleteAdvancePayment);
+
 // Toggle the ready-state of a single item within an order
 router.patch("/:orderId/items/:itemId/toggle-ready", authenticate, adminOrStaff, orderController.toggleItemReady);
 
