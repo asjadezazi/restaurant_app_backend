@@ -6,7 +6,7 @@ const { authenticate } = require("../middleware/authMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
 
 // Public registration (Superadmin only once — or via DB manually)
-router.post("/register", authController.registerUser); 
+// router.post("/register", authController.registerUser); 
 
 // Only superadmin can create admin
 router.post("/register/admin", authenticate, authorizeRoles("superadmin"), authController.registerUser);
