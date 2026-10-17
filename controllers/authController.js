@@ -10,6 +10,11 @@ exports.registerUser = async (req, res) => {
     const { name, email, password, role, domain, restaurantName } = req.body;
     const creator = req.user;
 
+    const allowedByCreator = { superadmin: ["admin"], admin: ["staff"] };
+    if (!allowedByCreator[creator?.role]?.includes(role)) {
+      return res.status(403).json({ message: "You cannot create this role" });
+    }
+
     if (!name || !email || !password || !role) {
       return res
         .status(400)
@@ -222,7 +227,7 @@ exports.updateUser = async (req, res) => {
       });
     }
 
-    if (userToUpdate.deleted) {
+    if (userToUpdate.isDeleted) {
       return res.status(400).json({
         message: "Cannot update deleted user"
       });
@@ -518,7 +523,7 @@ exports.deleteUser = async (req, res) => {
     }
 
     // Check if already deleted
-    if (userToDelete.deleted) {
+    if (userToDelete.isDeleted) {
       return res.status(400).json({ message: "User is already deleted" });
     }
 
